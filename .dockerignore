@@ -1,0 +1,43 @@
+# Build outputs (САМОЕ ВАЖНОЕ - убирает дубликаты AssemblyInfo)
+**/bin/
+**/obj/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Git
+.git/
+.gitignore
+
+# Docker файлы (не нужны внутри контейнера)
+**/Dockerfile
+**/.dockerignore
+docker-compose*.yml
+
+# Тесты (не нужны в production-образах)
+tests/
+
+# Документация
+*.md
+docs/
+README.md
+
+# Логи
+**/*.log
+**/logs/
+
+# Node modules (если есть)
+**/node_modules/
+
+# Launch settings (локальные настройки запуска)
+**/Properties/launchSettings.json
+
+# Temp files
+**/Thumbs.db
+**/.DS_Store

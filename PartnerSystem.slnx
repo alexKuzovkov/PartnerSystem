@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CommissionService/CommissionService.csproj" />
+    <Project Path="src/EventService/EventService.csproj" />
+    <Project Path="src/UserService/UserService.csproj" />
+    <Project Path="src/WalletService/WalletService.csproj" />
+  </Folder>
+  <Folder Name="/src/Shared/">
+    <Project Path="src/Shared/PartnerSystem.Contracts/PartnerSystem.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CommissionService.Tests/CommissionService.Tests.csproj" />
+  </Folder>
+  <Folder Name="/Элементы решения/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="docker-compose.yml" />
+  </Folder>
+</Solution>

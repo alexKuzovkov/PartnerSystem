@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+option csharp_namespace = "PartnerSystem.Contracts.Grpc";
+
+package partner;
+
+service PartnerService {
+  // Получить цепочку партнеров вверх от пользователя
+  rpc GetPartnerChain(GetPartnerChainRequest) returns (GetPartnerChainResponse);
+  
+  // Добавить пользователя
+  rpc AddUser(AddUserRequest) returns (AddUserResponse);
+  
+  // Установить партнерскую связь
+  rpc SetPartnerLink(SetPartnerLinkRequest) returns (SetPartnerLinkResponse);
+  
+  rpc GetDownline(GetDownlineRequest) returns (GetDownlineResponse);
+}
+
+message GetDownlineRequest {
+    string UserExternalId = 1;
+    int32 MaxLevels = 2;
+}
+
+message GetDownlineResponse {
+    repeated DownlineNode Nodes = 1;
+}
+
+message DownlineNode {
+    string UserExternalId = 1;
+    int32 Level = 2;
+    int32 DirectReferralsCount = 3;
+}
+
+message GetPartnerChainRequest {
+  string user_external_id = 1;
+  int32 max_levels = 2;
+}
+
+message GetPartnerChainResponse {
+  repeated string partner_external_ids = 1;
+}
+
+message AddUserRequest {
+  string external_id = 1;
+  string parent_external_id = 2;
+}
+
+message AddUserResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message SetPartnerLinkRequest {
+  string user_external_id = 1;
+  string partner_external_id = 2;
+}
+
+message SetPartnerLinkResponse {
+  bool success = 1;
+  string message = 2;
+}
