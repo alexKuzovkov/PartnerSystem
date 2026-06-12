@@ -21,7 +21,7 @@
 
 ### Общая схема системы
 
- + "" + mermaid
+```mermaid
 graph TB
     subgraph "Клиенты"
         Client[HTTP Клиент / Postman]
@@ -62,11 +62,11 @@ graph TB
     style ES fill:#2196F3,color:#fff
     style CS fill:#FF9800,color:#fff
     style WS fill:#9C27B0,color:#fff
- + "" + 
+```
 
 ### Поток обработки события
 
- + "" + mermaid
+```mermaid
 sequenceDiagram
     participant C as Клиент
     participant ES as EventService
@@ -97,11 +97,11 @@ sequenceDiagram
 
     Note over WS,DB3: PayoutBackgroundService (каждые 5 мин)
     WS->>DB3: UPDATE Wallets (списанием)
- + "" + 
+```
 
 ### Схема данных
 
- + "" + mermaid
+```mermaid
 erDiagram
     USERS ||--o{ USERS : "parent/child"
     USERS ||--o{ EVENTS : "creates"
@@ -134,7 +134,7 @@ erDiagram
         string userExternalId PK
         decimal balance
     }
- + "" + 
+```
 
 ---
 
@@ -157,7 +157,7 @@ erDiagram
 
 ## 📁 Структура проекта
 
- + "" + 
+```
 PartnerSystem/
 ├── src/
 │   ├── UserService/              # Управление пользователями и деревом
@@ -165,15 +165,15 @@ PartnerSystem/
 │   ├── CommissionService/        # Расчёт комиссий
 │   ├── WalletService/            # Кошельки и выплаты
 │   └── Shared/
-│       └── PartnerSystem.Contracts/  # Общие контракты
+│       └── PartnerSystem.Contracts/
 │
 ├── tests/
-│   └── CommissionService.Tests/  # Unit-тесты
+│   └── CommissionService.Tests/
 │
 ├── docker-compose.yml
 ├── test_all.sh
 └── README.md
- + "" + 
+```
 
 ---
 
@@ -187,27 +187,27 @@ PartnerSystem/
 
 ### 1. Запуск всех сервисов
 
- + "" + ash
+```bash
 cd D:\Valetax\PartnerSystem
 docker compose --profile dev up -d --build
- + "" + 
+```
 
 ### 2. Проверка статуса
 
- + "" + ash
+```bash
 docker compose ps
- + "" + 
+```
 
-Все сервисы должны иметь статус Up (healthy).
+Все сервисы должны иметь статус `Up (healthy)`.
 
 ### 3. Проверка Health Checks
 
- + "" + ash
+```bash
 curl http://localhost:5001/health
 curl http://localhost:5002/health
 curl http://localhost:5003/health
 curl http://localhost:5004/health
- + "" + 
+```
 
 ### 4. Полезные UI
 
@@ -219,30 +219,30 @@ curl http://localhost:5004/health
 
 ### 5. Остановка и очистка
 
- + "" + ash
+```bash
 docker compose --profile dev down
 docker compose --profile dev down -v
- + "" + 
+```
 
 ---
 
 ## 🧪 Unit-тесты
 
- + "" + powershell
+```powershell
 cd D:\Valetax\PartnerSystem
 dotnet test tests/CommissionService.Tests/ --verbosity normal
- + "" + 
+```
 
-Ожидаемый результат: Passed: 10, Failed: 0
+Ожидаемый результат: `Passed: 10, Failed: 0`
 
 ---
 
 ## 🔬 Интеграционные тесты
 
- + "" + ash
+```bash
 chmod +x test_all.sh
 ./test_all.sh
- + "" + 
+```
 
 ---
 
@@ -251,55 +251,64 @@ chmod +x test_all.sh
 ### 🟢 UserService (порт 5001)
 
 **Создать пользователя:**
- + "" + ash
+
+```bash
 curl -X POST http://localhost:5001/api/users -H "Content-Type: application/json" -d '{"externalId":"user1","parentExternalId":null}'
- + "" + 
+```
 
 **Получить ветку вверх (цепочка партнёров):**
- + "" + ash
+
+```bash
 curl -s http://localhost:5001/api/users/user3/chain
- + "" + 
+```
 
 **Получить ветку вниз (все потомки):**
- + "" + ash
+
+```bash
 curl -s http://localhost:5001/api/users/root/downline
- + "" + 
+```
 
 ### 🔵 EventService (порт 5002)
 
 **Отправить событие о прибыли:**
- + "" + ash
+
+```bash
 curl -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"evt001","userExternalId":"user3","profit":1000}'
- + "" + 
+```
 
 ### 🟠 CommissionService (порт 5003)
 
 **Получить детали комиссий:**
- + "" + ash
+
+```bash
 curl -s http://localhost:5003/api/commissions/evt001
- + "" + 
+```
 
 **Получить текущую схему:**
- + "" + ash
+
+```bash
 curl -s http://localhost:5003/api/admin/schema
- + "" + 
+```
 
 **Переключить схему на Fibonacci:**
- + "" + ash
+
+```bash
 curl -X POST http://localhost:5003/api/admin/schema -H "Content-Type: application/json" -d '{"schema":"Fibonacci"}'
- + "" + 
+```
 
 ### 🟣 WalletService (порт 5004)
 
 **Получить баланс:**
- + "" + ash
+
+```bash
 curl -s http://localhost:5004/api/wallets/user1/balance
- + "" + 
+```
 
 **История выплат:**
- + "" + ash
+
+```bash
 curl -s http://localhost:5004/api/wallets/user1/history
- + "" + 
+```
 
 ---
 
@@ -307,7 +316,7 @@ curl -s http://localhost:5004/api/wallets/user1/history
 
 ### Сценарий 1: Полный цикл (Linear)
 
- + "" + ash
+```bash
 # 1. Устанавливаем Linear схему
 curl -X POST http://localhost:5003/api/admin/schema -H "Content-Type: application/json" -d '{"schema":"Linear"}'
 
@@ -325,34 +334,34 @@ sleep 15
 
 # 5. Проверяем комиссии
 curl -s http://localhost:5003/api/commissions/s1_evt
- + "" + 
+```
 
 ### Сценарий 2: Переключение на Fibonacci
 
- + "" + ash
+```bash
 curl -X POST http://localhost:5003/api/admin/schema -H "Content-Type: application/json" -d '{"schema":"Fibonacci"}'
 curl -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"s2_evt","userExternalId":"charlie","profit":1000}'
 sleep 15
 curl -s http://localhost:5003/api/commissions/s2_evt
- + "" + 
+```
 
 ### Сценарий 3: Идемпотентность
 
- + "" + ash
+```bash
 for i in 1 2 3 4 5; do
   curl -s -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"idempotent","userExternalId":"charlie","profit":100}'
 done
 sleep 10
 curl -s http://localhost:5003/api/commissions/idempotent
- + "" + 
+```
 
 ### Сценарий 4: Отрицательный profit
 
- + "" + ash
+```bash
 curl -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"loss_evt","userExternalId":"charlie","profit":-500}'
 sleep 10
 curl -s http://localhost:5003/api/commissions/loss_evt
- + "" + 
+```
 
 ---
 
@@ -383,13 +392,13 @@ curl -s http://localhost:5003/api/commissions/loss_evt
 ### 4. Идемпотентность
 
 Реализована на трёх уровнях:
-1. Уникальный индекс на ProfitEvents.EventExternalId
-2. Составной индекс на (EventExternalId, PartnerExternalId, Level)
-3. Уникальный индекс на PayoutHistory.CommissionEventExternalId
+1. Уникальный индекс на `ProfitEvents.EventExternalId`
+2. Составной индекс на `(EventExternalId, PartnerExternalId, Level)`
+3. Уникальный индекс на `PayoutHistory.CommissionEventExternalId`
 
 ### 5. Переключение схемы
 
-Хранится в таблице SchemaSettings. Каждая комиссия хранит свой schemaType — старые не пересчитываются при переключении.
+Хранится в таблице `SchemaSettings`. Каждая комиссия хранит свой `schemaType` — старые не пересчитываются при переключении.
 
 ### 6. Отказоустойчивость
 
