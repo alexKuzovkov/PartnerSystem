@@ -1,4 +1,4 @@
-# Build outputs (САМОЕ ВАЖНОЕ - убирает дубликаты AssemblyInfo)
+# Build outputs (most important: prevents duplicate AssemblyInfo artifacts)
 **/bin/
 **/obj/
 
@@ -15,29 +15,33 @@
 .git/
 .gitignore
 
-# Docker файлы (не нужны внутри контейнера)
+# Docker files (not needed inside the container image)
 **/Dockerfile
 **/.dockerignore
 docker-compose*.yml
 
-# Тесты (не нужны в production-образах)
+# Tests (not needed in production images)
 tests/
 
-# Документация
+# Documentation
 *.md
 docs/
 README.md
 
-# Логи
+# Logs
 **/*.log
 **/logs/
 
-# Node modules (если есть)
+# Node modules (if present)
 **/node_modules/
 
-# Launch settings (локальные настройки запуска)
+# Launch settings (local development settings)
 **/Properties/launchSettings.json
 
 # Temp files
 **/Thumbs.db
 **/.DS_Store
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example

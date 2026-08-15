@@ -1,4 +1,4 @@
-﻿using CommissionService.Application;
+using CommissionService.Application;
 using Microsoft.AspNetCore.Mvc;
 using PartnerSystem.Contracts;
 
@@ -6,7 +6,7 @@ namespace CommissionService.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class AdminController : ControllerBase
+public sealed class AdminController : ControllerBase
 {
     private readonly ISchemaSettingsService _schemaSettingsService;
     private readonly ILogger<AdminController> _logger;
@@ -20,30 +20,32 @@ public class AdminController : ControllerBase
     }
 
     [HttpGet("schema")]
-    public async Task<IActionResult> GetCurrentSchema(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetCurrentSchemaAsync(CancellationToken cancellationToken)
     {
-        var schema = await _schemaSettingsService.GetCurrentSchemaAsync();
+        var schema = await _schemaSettingsService.GetCurrentSchemaAsync(cancellationToken);
         return Ok(new { schema = schema.ToString() });
     }
 
     [HttpPost("schema")]
-    public async Task<IActionResult> SetSchema([FromBody] SetSchemaRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> SetSchemaAsync(
+        [FromBody] SetSchemaRequest request,
+        CancellationToken cancellationToken)
     {
         _logger.LogInformation(
-            "Администратор переключает схему на {Schema}",
+            "Administrator is switching commission scheme to {Schema}",
             request.Schema);
 
         await _schemaSettingsService.SetCurrentSchemaAsync(request.Schema, cancellationToken);
 
         return Ok(new
         {
-            message = "Схема успешно переключена",
+            message = "Commission scheme updated successfully",
             schema = request.Schema.ToString()
         });
     }
 }
 
-public class SetSchemaRequest
+public sealed class SetSchemaRequest
 {
     public SchemaType Schema { get; set; }
 }

@@ -1,16 +1,10 @@
-using System.Net;
 using CommissionService.Application;
 using CommissionService.Consumers;
 using CommissionService.Infrastructure;
-using Grpc.Core;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using PartnerSystem.Contracts.Grpc;
-using RedLockNet;
-using RedLockNet.SERedis;
-using RedLockNet.SERedis.Configuration;
 using Serilog;
-using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -32,29 +26,10 @@ builder.Services.AddHealthChecks()
     .AddNpgSql(builder.Configuration.GetConnectionString("DefaultConnection")!, name: "database")
     .AddRedis(builder.Configuration["Redis:ConnectionString"]!, name: "redis");
 
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-{
-    var connectionString = builder.Configuration["Redis:ConnectionString"]!;
-    return ConnectionMultiplexer.Connect(connectionString);
-});
-
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = builder.Configuration["Redis:ConnectionString"];
     options.InstanceName = "PartnerSystem:";
-});
-
-builder.Services.AddSingleton<IDistributedLockFactory>(sp =>
-{
-    var connectionString = builder.Configuration["Redis:ConnectionString"]!;
-
-    var config = ConfigurationOptions.Parse(connectionString);
-
-    var endPoints = config.EndPoints
-        .Select(ep => new RedLockEndPoint { EndPoint = ep })
-        .ToList();
-
-    return RedLockFactory.Create(endPoints);
 });
 
 builder.Services.AddMassTransit(x =>
@@ -62,6 +37,13 @@ builder.Services.AddMassTransit(x =>
     x.SetKebabCaseEndpointNameFormatter();
 
     x.AddConsumer<CommissionCalculationConsumer>();
+
+    x.AddEntityFrameworkOutbox<CommissionDbContext>(options =>
+    {
+        options.UsePostgres();
+        options.UseBusOutbox();
+        options.DuplicateDetectionWindow = TimeSpan.FromMinutes(5);
+    });
 
     x.UsingRabbitMq((context, cfg) =>
     {
@@ -72,23 +54,18 @@ builder.Services.AddMassTransit(x =>
         });
         cfg.ReceiveEndpoint("commission-service", e =>
         {
-            e.ConfigureConsumer<CommissionCalculationConsumer>(context);
             e.ConcurrentMessageLimit = 16;
             e.PrefetchCount = 16;
             e.UseMessageRetry(r => r.Interval(3, TimeSpan.FromSeconds(5)));
+            e.UseEntityFrameworkOutbox<CommissionDbContext>(context);
+            e.ConfigureConsumer<CommissionCalculationConsumer>(context);
         });
-
-        cfg.ConfigureEndpoints(context);
     });
 });
 
 builder.Services.AddGrpcClient<PartnerService.PartnerServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["UserService:GrpcAddress"]!);
-})
-.ConfigureChannel(channel =>
-{
-    channel.Credentials = ChannelCredentials.Insecure;
 });
 
 builder.Services.AddSingleton<ICommissionCalculator, CommissionCalculator>();

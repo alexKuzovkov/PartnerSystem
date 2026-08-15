@@ -1,414 +1,469 @@
-﻿# 🤝 PartnerSystem — Система партнёрских отчислений
+# PartnerSystem
 
-Распределённая микросервисная система для начисления и выплаты партнёрских комиссий в иерархии пользователей. Поддерживает две схемы начисления (Linear и Fibonacci), идемпотентность, Outbox-паттерн и горизонтальное масштабирование.
+A distributed .NET 8 backend that models a multi-level partner commission and payout workflow.
 
----
+The project is intentionally designed as a backend engineering portfolio example: it demonstrates service boundaries, asynchronous messaging, transactional outbox, idempotency, PostgreSQL concurrency control, gRPC, Redis caching, background processing, health checks, Docker-based local infrastructure, and automated tests.
 
-## 📋 Содержание
+## Highlights
 
-- [Архитектура](#-архитектура)
-- [Технологический стек](#-технологический-стек)
-- [Структура проекта](#-структура-проекта)
-- [Быстрый старт](#-быстрый-старт)
-- [Unit-тесты](#-unit-тесты)
-- [Интеграционные тесты](#-интеграционные-тесты)
-- [API Reference](#-api-reference)
-- [Архитектурные решения](#-архитектурные-решения)
+- **.NET 8 / ASP.NET Core** microservices
+- **PostgreSQL 16** with a separate database per service
+- **RabbitMQ + MassTransit** for asynchronous integration
+- **MassTransit EF Bus Outbox** in EventService and CommissionService
+- **gRPC** for low-latency CommissionService → UserService calls
+- **Redis** cache for partner-chain lookups
+- **Database-backed idempotency** at every important write boundary
+- **`FOR UPDATE SKIP LOCKED`** for horizontally scalable payout workers
+- **Atomic PostgreSQL wallet upsert** to avoid lost updates under concurrent deposits
+- **Serilog** structured logging and health checks
+- **Docker Compose** for the complete local environment
+- **xUnit + FluentAssertions** unit tests
+- **Bash and PowerShell** end-to-end test runners
+- **GitHub Actions** build and test workflow
 
----
-
-## 🏗 Архитектура
-
-### Общая схема системы
+## Architecture
 
 ```mermaid
-graph TB
-    subgraph "Клиенты"
-        Client[HTTP Клиент / Postman]
-    end
+flowchart LR
+    Client[REST client] --> US[UserService]
+    Client --> ES[EventService]
+    Client --> CS[CommissionService]
+    Client --> WS[WalletService]
 
-    subgraph "Микросервисы"
-        US[UserService<br/>:5001<br/>REST + gRPC]
-        ES[EventService<br/>:5002<br/>REST]
-        CS[CommissionService<br/>:5003<br/>REST]
-        WS[WalletService<br/>:5004<br/>REST]
-    end
+    ES -->|CommissionCalculationRequested| RMQ[(RabbitMQ)]
+    RMQ --> CS
 
-    subgraph "Инфраструктура"
-        PG[(PostgreSQL<br/>4 базы)]
-        RMQ[RabbitMQ<br/>Брокер сообщений]
-        RD[(Redis<br/>Кэш + Locks)]
-    end
+    CS -->|gRPC| US
+    CS -->|partner-chain cache| Redis[(Redis)]
+    CS -->|CommissionCalculated| RMQ
+    RMQ --> WS
 
-    Client -->|REST| US
-    Client -->|REST| ES
-    Client -->|REST| CS
-    Client -->|REST| WS
-
-    US -->|gRPC| CS
-    ES -->|AMQP| RMQ
-    CS -->|AMQP| RMQ
-    WS -->|AMQP| RMQ
-
-    US --> PG
-    ES --> PG
-    CS --> PG
-    WS --> PG
-
-    CS --> RD
-    WS --> RD
-
-    style US fill:#4CAF50,color:#fff
-    style ES fill:#2196F3,color:#fff
-    style CS fill:#FF9800,color:#fff
-    style WS fill:#9C27B0,color:#fff
+    US --> UDB[(users_db)]
+    ES --> EDB[(events_db)]
+    CS --> CDB[(commissions_db)]
+    WS --> WDB[(wallets_db)]
 ```
 
-### Поток обработки события
+### Service responsibilities
+
+| Service | Responsibility |
+|---|---|
+| **UserService** | User hierarchy, parent relationships, upward partner chain, downline projection, gRPC API |
+| **EventService** | Accepts profit/loss events, guarantees event idempotency, publishes commission requests through a transactional outbox |
+| **CommissionService** | Reads the active calculation scheme, resolves partner chains, calculates commissions, persists results, publishes payout events through a transactional outbox |
+| **WalletService** | Stores pending payouts, claims work across multiple instances, credits wallets atomically, keeps idempotent transaction history |
+
+## Event flow
 
 ```mermaid
 sequenceDiagram
-    participant C as Клиент
-    participant ES as EventService
-    participant DB1 as events_db
-    participant RMQ as RabbitMQ
-    participant CS as CommissionService
-    participant US as UserService
-    participant DB2 as commissions_db
-    participant WS as WalletService
-    participant DB3 as wallets_db
+    autonumber
+    participant Client
+    participant EventService
+    participant EventDb as events_db
+    participant RabbitMQ
+    participant CommissionService
+    participant UserService
+    participant Redis
+    participant CommissionDb as commissions_db
+    participant WalletService
+    participant WalletDb as wallets_db
 
-    C->>ES: POST /api/events
-    ES->>DB1: INSERT ProfitEvent + OutboxMessage
-    ES-->>C: 200 OK
+    Client->>EventService: POST /api/events
+    EventService->>EventDb: ProfitEvent + MassTransit outbox message
+    EventDb-->>EventService: atomic commit
+    EventService-->>Client: 202 Accepted
 
-    Note over ES,DB1: Outbox Processor (фон)
-    ES->>RMQ: Publish CommissionCalculationRequested
+    EventDb->>RabbitMQ: CommissionCalculationRequested
+    RabbitMQ->>CommissionService: consume
 
-    RMQ->>CS: Consume (commission-service queue)
-    CS->>US: gRPC GetPartnerChain
-    US-->>CS: [u2, u1, root]
-    CS->>CS: Рассчёт комиссий (Linear/Fibonacci)
-    CS->>DB2: INSERT Commissions (батч)
-    CS->>RMQ: Publish CommissionCalculated
+    CommissionService->>Redis: partner-chain lookup
+    alt cache miss
+        CommissionService->>UserService: gRPC GetPartnerChain
+        UserService-->>CommissionService: partner ids
+        CommissionService->>Redis: cache partner chain
+    end
 
-    RMQ->>WS: Consume (wallet-service queue)
-    WS->>DB3: INSERT PendingPayout
+    CommissionService->>CommissionDb: Commissions + MassTransit outbox messages
+    CommissionDb-->>CommissionService: atomic commit
+    CommissionDb->>RabbitMQ: CommissionCalculated x N
 
-    Note over WS,DB3: PayoutBackgroundService (каждые 5 мин)
-    WS->>DB3: UPDATE Wallets (списанием)
+    RabbitMQ->>WalletService: consume payout events
+    WalletService->>WalletDb: create idempotent PendingPayout rows
+
+    loop background payout worker
+        WalletService->>WalletDb: claim batch with FOR UPDATE SKIP LOCKED
+        WalletService->>WalletDb: insert transaction + atomic wallet upsert
+        WalletService->>WalletDb: mark payout paid
+    end
 ```
 
-### Схема данных
+## Reliability and consistency
 
-```mermaid
-erDiagram
-    USERS ||--o{ USERS : "parent/child"
-    USERS ||--o{ EVENTS : "creates"
-    EVENTS ||--o{ COMMISSIONS : "generates"
-    COMMISSIONS ||--o{ WALLETS : "pays to"
+### Transactional outbox
 
-    USERS {
-        string externalId PK
-        string parentId FK
-    }
+EventService and CommissionService use **MassTransit Entity Framework Bus Outbox**.
 
-    EVENTS {
-        string eventExternalId PK
-        string userExternalId FK
-        decimal profit
-        datetime occurredAt
-    }
+The important ordering is deliberate:
 
-    COMMISSIONS {
-        string id PK
-        string eventExternalId FK
-        string partnerExternalId
-        int level
-        decimal amount
-        string schemaType
-        bool isPaid
-    }
+1. Modify domain data in the service `DbContext`.
+2. Call `IPublishEndpoint.Publish(...)`.
+3. Call `SaveChangesAsync(...)` once.
+4. EF commits domain rows and MassTransit outbox rows atomically.
+5. MassTransit delivers the persisted messages to RabbitMQ after the database commit.
 
-    WALLETS {
-        string userExternalId PK
-        decimal balance
-    }
+This prevents the classic failure mode where the database commit succeeds but the broker publish fails.
+
+### Idempotency boundaries
+
+The database is treated as the final source of truth for duplicate protection.
+
+| Stage | Idempotency key |
+|---|---|
+| Profit event | `ProfitEvents.EventExternalId` |
+| Commission | `(EventExternalId, PartnerExternalId, Level)` |
+| Pending payout | `(CommissionEventExternalId, PartnerExternalId, Level)` |
+| Wallet credit | `(UserExternalId, CommissionEventExternalId)` in `Transactions` |
+
+The pending-payout composite key is important because one source event can generate several partner commissions. Using only the event id would incorrectly allow just one payout per event.
+
+### Concurrent payout processing
+
+Payout workers do **not** use a global advisory lock.
+
+Each worker claims a small batch using PostgreSQL:
+
+```sql
+SELECT *
+FROM "PendingPayouts"
+WHERE NOT "IsPaid"
+  AND ("LockedAt" IS NULL OR "LockedAt" < @staleBefore)
+ORDER BY "CreatedAt"
+FOR UPDATE SKIP LOCKED
+LIMIT @batchSize;
 ```
 
----
+The selected rows are marked with an instance id and claim timestamp in a short transaction. Other service instances skip rows locked by the current transaction and can claim different work immediately.
 
-## 🛠 Технологический стек
+If an instance dies after claiming a row, the claim becomes eligible again after the configured timeout.
 
-| Компонент | Технология | Назначение |
-|-----------|------------|------------|
-| Runtime | .NET 8 | Основная платформа |
-| БД | PostgreSQL 16 | Хранение данных (4 отдельные БД) |
-| Брокер | RabbitMQ 3.13 | Асинхронная коммуникация |
-| Кэш | Redis 7 | Кэширование цепочек + distributed locks |
-| ORM | Entity Framework Core 8 | Работа с БД |
-| gRPC | Grpc.AspNetCore | Синхронный вызов UserService → CommissionService |
-| Messaging | MassTransit 8 | Работа с RabbitMQ + Outbox pattern |
-| Логирование | Serilog | Структурированные логи |
-| Тесты | xUnit + FluentAssertions | Unit-тесты |
-| Контейнеризация | Docker + docker-compose | Локальный запуск |
+### Concurrent wallet credits
 
----
+Wallet credits use two PostgreSQL operations in one transaction:
 
-## 📁 Структура проекта
+1. Insert the transaction row with `ON CONFLICT DO NOTHING` as the idempotency gate.
+2. Upsert the wallet and increment the balance atomically.
 
+This avoids both duplicate credits and lost updates when several workers deposit into the same wallet concurrently.
+
+## Commission schemes
+
+Two calculation modes are supported.
+
+### Linear
+
+For hierarchy level `L` and profit `P`:
+
+```text
+commission = L * P / 100
 ```
+
+For `P = 1000`:
+
+| Level | Commission |
+|---:|---:|
+| 1 | 10 |
+| 2 | 20 |
+| 3 | 30 |
+
+### Fibonacci
+
+```text
+commission = Fibonacci(L) * P / 100
+```
+
+For `P = 1000`:
+
+| Level | Fibonacci | Commission |
+|---:|---:|---:|
+| 1 | 1 | 10 |
+| 2 | 1 | 10 |
+| 3 | 2 | 20 |
+| 4 | 3 | 30 |
+| 5 | 5 | 50 |
+
+The active scheme is stored in `SchemaSettings`. Each persisted commission stores the scheme used for its calculation, so changing the setting does not rewrite historical results.
+
+## Technology stack
+
+| Area | Technology |
+|---|---|
+| Runtime | .NET 8, ASP.NET Core |
+| ORM | Entity Framework Core 8 |
+| Database | PostgreSQL 16 |
+| Messaging | RabbitMQ 3.13, MassTransit 8 |
+| Service-to-service RPC | gRPC |
+| Cache | Redis 7 |
+| Logging | Serilog |
+| API documentation | Swagger / OpenAPI |
+| Tests | xUnit, FluentAssertions |
+| Containers | Docker, Docker Compose |
+| CI | GitHub Actions |
+
+## Repository layout
+
+```text
 PartnerSystem/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── .editorconfig
+├── .env.example
 ├── src/
-│   ├── UserService/              # Управление пользователями и деревом
-│   ├── EventService/             # Приём и обработка событий
-│   ├── CommissionService/        # Расчёт комиссий
-│   ├── WalletService/            # Кошельки и выплаты
+│   ├── UserService/
+│   ├── EventService/
+│   ├── CommissionService/
+│   ├── WalletService/
 │   └── Shared/
 │       └── PartnerSystem.Contracts/
-│
 ├── tests/
-│   └── CommissionService.Tests/
-│
+│   ├── CommissionService.Tests/
+│   └── WalletService.Tests/
+├── Directory.Build.props
+├── Directory.Packages.props
+├── PartnerSystem.slnx
 ├── docker-compose.yml
+├── init-db.sh
 ├── test_all.sh
+├── test_all.ps1
 └── README.md
 ```
 
----
+## Quick start
 
-## 🚀 Быстрый старт
+### Prerequisites
 
-### Предварительные требования
+- Docker Desktop or Docker Engine with Compose v2
+- Optional: .NET 8 SDK for running unit tests outside containers
+- Optional: PowerShell 5.1+ or PowerShell 7 for the Windows end-to-end runner
 
-- **Docker Desktop** (с WSL 2 backend)
-- **curl** (для тестов)
-- **.NET 8 SDK** (для unit-тестов)
+### Start the full environment
 
-### 1. Запуск всех сервисов
+The Compose file has development defaults. To override local credentials, copy the example environment file and edit it:
 
 ```bash
-cd D:\Valetax\PartnerSystem
-docker compose --profile dev up -d --build
+cp .env.example .env
 ```
 
-### 2. Проверка статуса
+Then start the stack:
+
+```bash
+docker compose up -d --build
+```
+
+Check container status:
 
 ```bash
 docker compose ps
 ```
 
-Все сервисы должны иметь статус `Up (healthy)`.
+The PostgreSQL initialization script creates four databases automatically:
 
-### 3. Проверка Health Checks
+- `users_db`
+- `events_db`
+- `commissions_db`
+- `wallets_db`
 
-```bash
-curl http://localhost:5001/health
-curl http://localhost:5002/health
-curl http://localhost:5003/health
-curl http://localhost:5004/health
-```
-
-### 4. Полезные UI
-
-- **RabbitMQ Management**: http://localhost:15672 (guest / guest)
-- **Swagger UserService**: http://localhost:5001/swagger
-- **Swagger EventService**: http://localhost:5002/swagger
-- **Swagger CommissionService**: http://localhost:5003/swagger
-- **Swagger WalletService**: http://localhost:5004/swagger
-
-### 5. Остановка и очистка
+If you previously ran an older schema version of this project, reset local volumes before the first run of the refactored version:
 
 ```bash
-docker compose --profile dev down
-docker compose --profile dev down -v
+docker compose down -v
+docker compose up -d --build
 ```
 
----
+### Service endpoints
 
-## 🧪 Unit-тесты
+| Service | URL |
+|---|---|
+| UserService REST | `http://localhost:5001` |
+| EventService | `http://localhost:5002` |
+| CommissionService | `http://localhost:5003` |
+| WalletService | `http://localhost:5004` |
+| RabbitMQ Management | `http://localhost:15672` |
 
-```powershell
-cd D:\Valetax\PartnerSystem
-dotnet test tests/CommissionService.Tests/ --verbosity normal
-```
+UserService exposes gRPC internally on port `8080` and REST/health checks on port `8081` inside its container.
 
-Ожидаемый результат: `Passed: 10, Failed: 0`
+## API examples
 
----
-
-## 🔬 Интеграционные тесты
+### Create a hierarchy
 
 ```bash
-chmod +x test_all.sh
+curl -X POST http://localhost:5001/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"externalId":"root"}'
+
+curl -X POST http://localhost:5001/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"externalId":"alice","parentExternalId":"root"}'
+
+curl -X POST http://localhost:5001/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"externalId":"bob","parentExternalId":"alice"}'
+
+curl -X POST http://localhost:5001/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"externalId":"charlie","parentExternalId":"bob"}'
+```
+
+Get the upward partner chain:
+
+```bash
+curl http://localhost:5001/api/users/charlie/chain
+```
+
+Get the downline:
+
+```bash
+curl http://localhost:5001/api/users/root/downline
+```
+
+### Select the calculation scheme
+
+```bash
+curl -X POST http://localhost:5003/api/admin/schema \
+  -H "Content-Type: application/json" \
+  -d '{"schema":"Linear"}'
+```
+
+or:
+
+```bash
+curl -X POST http://localhost:5003/api/admin/schema \
+  -H "Content-Type: application/json" \
+  -d '{"schema":"Fibonacci"}'
+```
+
+### Submit a profit event
+
+```bash
+curl -X POST http://localhost:5002/api/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventExternalId":"evt-001",
+    "userExternalId":"charlie",
+    "profit":1000,
+    "occurredAt":"2026-08-15T10:00:00Z"
+  }'
+```
+
+### Read calculated commissions
+
+```bash
+curl http://localhost:5003/api/commissions/evt-001
+```
+
+### Read wallet state
+
+```bash
+curl http://localhost:5004/api/wallets/alice/balance
+curl http://localhost:5004/api/wallets/alice/transactions
+```
+
+## Testing
+
+### Unit tests
+
+Run all unit test projects:
+
+```bash
+dotnet test tests/CommissionService.Tests/CommissionService.Tests.csproj
+dotnet test tests/WalletService.Tests/WalletService.Tests.csproj
+```
+
+The tests cover commission formulas, boundary conditions, domain invariants, wallet balance rules, and payout claim state transitions.
+
+### End-to-end tests on Linux / macOS / WSL
+
+If the services are already running:
+
+```bash
 ./test_all.sh
 ```
 
----
-
-## 📡 API Reference
-
-### 🟢 UserService (порт 5001)
-
-**Создать пользователя:**
+Build and start the stack automatically before testing:
 
 ```bash
-curl -X POST http://localhost:5001/api/users -H "Content-Type: application/json" -d '{"externalId":"user1","parentExternalId":null}'
+./test_all.sh --start
 ```
 
-**Получить ветку вверх (цепочка партнёров):**
+### End-to-end tests on Windows PowerShell
+
+If the services are already running:
+
+```powershell
+.\test_all.ps1
+```
+
+Build and start the stack automatically:
+
+```powershell
+.\test_all.ps1 -StartServices
+```
+
+The GitHub Actions workflow runs the PowerShell end-to-end suite against the full Docker Compose stack after the build and unit-test job succeeds.
+
+The end-to-end suite validates:
+
+1. Service health checks
+2. User hierarchy creation
+3. Upward chain and downline queries
+4. Linear commission calculation
+5. Multi-level payouts reaching **every** partner wallet
+6. Fibonacci calculation and historical scheme immutability
+7. Duplicate-event idempotency
+8. Negative-profit behavior
+
+## Development checks
+
+Validate Docker Compose configuration:
 
 ```bash
-curl -s http://localhost:5001/api/users/user3/chain
+docker compose config --quiet
 ```
 
-**Получить ветку вниз (все потомки):**
+Inspect logs:
 
 ```bash
-curl -s http://localhost:5001/api/users/root/downline
+docker compose logs --tail=200
 ```
 
-### 🔵 EventService (порт 5002)
-
-**Отправить событие о прибыли:**
+Stop services:
 
 ```bash
-curl -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"evt001","userExternalId":"user3","profit":1000}'
+docker compose down
 ```
 
-### 🟠 CommissionService (порт 5003)
-
-**Получить детали комиссий:**
+Stop services and remove local data:
 
 ```bash
-curl -s http://localhost:5003/api/commissions/evt001
+docker compose down -v
 ```
 
-**Получить текущую схему:**
+## Engineering trade-offs
 
-```bash
-curl -s http://localhost:5003/api/admin/schema
-```
+This repository focuses on distributed backend patterns rather than production platform completeness.
 
-**Переключить схему на Fibonacci:**
+Deliberately out of scope for the demo:
 
-```bash
-curl -X POST http://localhost:5003/api/admin/schema -H "Content-Type: application/json" -d '{"schema":"Fibonacci"}'
-```
+- End-user authentication and authorization
+- TLS termination and certificate management
+- Secret management through Vault / cloud secret stores
+- OpenTelemetry collector and external metrics backend
+- Kubernetes deployment manifests
+- Multi-region database replication
 
-### 🟣 WalletService (порт 5004)
+The Docker Compose credentials are local-development defaults only and must not be used in a real environment.
 
-**Получить баланс:**
+## Suggested GitHub topics
 
-```bash
-curl -s http://localhost:5004/api/wallets/user1/balance
-```
-
-**История выплат:**
-
-```bash
-curl -s http://localhost:5004/api/wallets/user1/history
-```
-
----
-
-## 🎓 Пошаговый сценарий проверки
-
-### Сценарий 1: Полный цикл (Linear)
-
-```bash
-# 1. Устанавливаем Linear схему
-curl -X POST http://localhost:5003/api/admin/schema -H "Content-Type: application/json" -d '{"schema":"Linear"}'
-
-# 2. Создаём иерархию
-curl -X POST http://localhost:5001/api/users -H "Content-Type: application/json" -d '{"externalId":"root"}'
-curl -X POST http://localhost:5001/api/users -H "Content-Type: application/json" -d '{"externalId":"alice","parentExternalId":"root"}'
-curl -X POST http://localhost:5001/api/users -H "Content-Type: application/json" -d '{"externalId":"bob","parentExternalId":"alice"}'
-curl -X POST http://localhost:5001/api/users -H "Content-Type: application/json" -d '{"externalId":"charlie","parentExternalId":"bob"}'
-
-# 3. charlie зарабатывает 1000
-curl -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"s1_evt","userExternalId":"charlie","profit":1000}'
-
-# 4. Ждём 15 секунд
-sleep 15
-
-# 5. Проверяем комиссии
-curl -s http://localhost:5003/api/commissions/s1_evt
-```
-
-### Сценарий 2: Переключение на Fibonacci
-
-```bash
-curl -X POST http://localhost:5003/api/admin/schema -H "Content-Type: application/json" -d '{"schema":"Fibonacci"}'
-curl -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"s2_evt","userExternalId":"charlie","profit":1000}'
-sleep 15
-curl -s http://localhost:5003/api/commissions/s2_evt
-```
-
-### Сценарий 3: Идемпотентность
-
-```bash
-for i in 1 2 3 4 5; do
-  curl -s -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"idempotent","userExternalId":"charlie","profit":100}'
-done
-sleep 10
-curl -s http://localhost:5003/api/commissions/idempotent
-```
-
-### Сценарий 4: Отрицательный profit
-
-```bash
-curl -X POST http://localhost:5002/api/events -H "Content-Type: application/json" -d '{"eventExternalId":"loss_evt","userExternalId":"charlie","profit":-500}'
-sleep 10
-curl -s http://localhost:5003/api/commissions/loss_evt
-```
-
----
-
-## 🏛 Архитектурные решения
-
-### 1. Границы микросервисов
-
-| Сервис | Ответственность |
-|--------|-----------------|
-| **UserService** | Пользователи, иерархия, gRPC API |
-| **EventService** | Приём событий, Outbox pattern |
-| **CommissionService** | Расчёт комиссий, администрирование схемы |
-| **WalletService** | Кошельки, периодические выплаты |
-
-### 2. Выбор протоколов
-
-| Связь | Протокол | Обоснование |
-|-------|----------|-------------|
-| Клиент → Сервисы | REST/HTTP | Универсальность |
-| CommissionService → UserService | **gRPC** | Низкая задержка |
-| EventService → CommissionService | **RabbitMQ** | Асинхронность |
-| CommissionService → WalletService | **RabbitMQ** | Развязка сервисов |
-
-### 3. Outbox Pattern
-
-Сохраняем событие и сообщение в Outbox **в одной транзакции** — это гарантирует, что либо запишется всё, либо ничего.
-
-### 4. Идемпотентность
-
-Реализована на трёх уровнях:
-1. Уникальный индекс на `ProfitEvents.EventExternalId`
-2. Составной индекс на `(EventExternalId, PartnerExternalId, Level)`
-3. Уникальный индекс на `PayoutHistory.CommissionEventExternalId`
-
-### 5. Переключение схемы
-
-Хранится в таблице `SchemaSettings`. Каждая комиссия хранит свой `schemaType` — старые не пересчитываются при переключении.
-
-### 6. Отказоустойчивость
-
-- **Retry** в MassTransit (3 попытки)
-- **Circuit Breaker** для gRPC вызовов
-- **Health Checks** для всех сервисов
-- **Distributed Lock** (RedLock) для выплат
-
----
-
-## 👨‍💻 Автор
-
-Разработано в рамках тестового задания.
+`dotnet` · `csharp` · `aspnet-core` · `microservices` · `distributed-systems` · `rabbitmq` · `masstransit` · `postgresql` · `redis` · `grpc` · `transactional-outbox` · `idempotency` · `docker`

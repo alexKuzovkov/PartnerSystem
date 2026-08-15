@@ -1,10 +1,18 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using WalletService.Application;
 
 namespace WalletService.Infrastructure;
 
-public class PayoutBackgroundService : BackgroundService
+/// <summary>
+/// Claims payout rows in short PostgreSQL transactions using FOR UPDATE SKIP LOCKED.
+/// Multiple WalletService instances can therefore process different batches concurrently
+/// without a process-wide or database-wide advisory lock.
+/// </summary>
+public sealed class PayoutBackgroundService : BackgroundService
 {
+    private const int BatchSize = 100;
+    private static readonly TimeSpan ClaimTimeout = TimeSpan.FromMinutes(2);
+
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<PayoutBackgroundService> _logger;
     private readonly TimeSpan _payoutInterval;
@@ -17,145 +25,192 @@ public class PayoutBackgroundService : BackgroundService
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
-        _payoutInterval = payoutInterval ?? TimeSpan.FromMinutes(5);
+        _payoutInterval = payoutInterval ?? TimeSpan.FromSeconds(30);
         _instanceId = $"{Environment.MachineName}_{Guid.NewGuid():N}";
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "PayoutBackgroundService запущен. InstanceId: {InstanceId}, Interval: {Interval}",
-            _instanceId, _payoutInterval);
+            "PayoutBackgroundService started. InstanceId: {InstanceId}, interval: {Interval}",
+            _instanceId,
+            _payoutInterval);
 
-        while (!stoppingToken.IsCancellationRequested)
+        using var timer = new PeriodicTimer(_payoutInterval);
+
+        do
         {
             try
             {
-                if (await TryAcquireLockAsync(stoppingToken))
-                {
-                    await ProcessPayoutsAsync(stoppingToken);
-                    await ReleaseLockAsync();
-                }
-                else
-                {
-                    _logger.LogDebug("Lock занят другим инстансом, пропускаю итерацию");
-                }
+                var claimedPayoutIds = await ClaimBatchAsync(stoppingToken);
+                foreach (var payoutId in claimedPayoutIds)
+                    await ProcessClaimedPayoutAsync(payoutId, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Ошибка при обработке выплат");
-                await ReleaseLockAsync();
+                _logger.LogError(ex, "Unexpected error while processing payout batch");
             }
-
-            await Task.Delay(_payoutInterval, stoppingToken);
         }
+        while (await timer.WaitForNextTickAsync(stoppingToken));
+
+        _logger.LogInformation("PayoutBackgroundService stopped");
     }
 
-    private async Task<bool> TryAcquireLockAsync(CancellationToken cancellationToken)
+    private async Task<List<Guid>> ClaimBatchAsync(CancellationToken cancellationToken)
     {
-        using var scope = _serviceProvider.CreateScope();
+        await using var scope = _serviceProvider.CreateAsyncScope();
         var context = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+        await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
 
-        try
-        {
-            var result = await context.Database
-                .ExecuteSqlRawAsync(
-                    "SELECT pg_try_advisory_lock(123456789)",
-                    cancellationToken);
+        var staleBefore = DateTime.UtcNow.Subtract(ClaimTimeout);
 
-            using var cmd = context.Database.GetDbConnection().CreateCommand();
-            cmd.CommandText = "SELECT pg_try_advisory_lock(123456789)";
-            await context.Database.OpenConnectionAsync(cancellationToken);
-            var lockResult = await cmd.ExecuteScalarAsync(cancellationToken);
-
-            return lockResult is bool b && b;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Ошибка при захвате lock");
-            return false;
-        }
-    }
-
-    private async Task ReleaseLockAsync()
-    {
-        try
-        {
-            using var scope = _serviceProvider.CreateScope();
-            var context = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
-
-            await context.Database.ExecuteSqlRawAsync(
-                "SELECT pg_advisory_unlock(123456789)");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Ошибка при освобождении lock");
-        }
-    }
-
-    private async Task ProcessPayoutsAsync(CancellationToken cancellationToken)
-    {
-        _logger.LogInformation("Начало обработки выплат...");
-
-        using var scope = _serviceProvider.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
-        var walletProcessor = scope.ServiceProvider.GetRequiredService<IWalletProcessor>();
-
-        var unpaidPayouts = await context.PendingPayouts
-            .Where(p => !p.IsPaid && p.LockedAt == null)
-            .OrderBy(p => p.CreatedAt)
-            .Take(100)
+        var payouts = await context.PendingPayouts
+            .FromSqlInterpolated($"""
+                SELECT *
+                FROM "PendingPayouts"
+                WHERE NOT "IsPaid"
+                  AND ("LockedAt" IS NULL OR "LockedAt" < {staleBefore})
+                ORDER BY "CreatedAt"
+                FOR UPDATE SKIP LOCKED
+                LIMIT {BatchSize}
+                """)
             .ToListAsync(cancellationToken);
 
-        if (unpaidPayouts.Count == 0)
+        foreach (var payout in payouts)
+            payout.LockForProcessing(_instanceId);
+
+        if (payouts.Count > 0)
+            await context.SaveChangesAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+
+        if (payouts.Count > 0)
         {
-            _logger.LogDebug("Невыплаченных комиссий не найдено");
+            _logger.LogDebug(
+                "Instance {InstanceId} claimed {Count} payouts",
+                _instanceId,
+                payouts.Count);
+        }
+
+        return payouts.Select(p => p.Id).ToList();
+    }
+
+    private async Task ProcessClaimedPayoutAsync(
+        Guid payoutId,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = await LoadClaimedPayoutAsync(payoutId, cancellationToken);
+        if (snapshot is null)
             return;
-        }
 
-        _logger.LogInformation("Найдено {Count} невыплаченных комиссий", unpaidPayouts.Count);
-
-        var successCount = 0;
-        var failCount = 0;
-
-        foreach (var payout in unpaidPayouts)
+        try
         {
-            try
+            DepositResult result;
+            await using (var walletScope = _serviceProvider.CreateAsyncScope())
             {
-                payout.LockForProcessing(_instanceId);
+                var walletProcessor = walletScope.ServiceProvider.GetRequiredService<IWalletProcessor>();
 
-                var result = await walletProcessor.DepositCommissionAsync(
-                    payout.PartnerExternalId,
-                    payout.Amount,
-                    payout.Id.ToString(), cancellationToken);
+                // Payout.Id is stable across retries. If the process crashes after the wallet
+                // transaction commits but before the payout row is marked paid, the next attempt
+                // uses the same key and WalletProcessor safely recognizes the duplicate.
+                result = await walletProcessor.DepositCommissionAsync(
+                    snapshot.PartnerExternalId,
+                    snapshot.Amount,
+                    snapshot.Id.ToString("N"),
+                    cancellationToken);
+            }
 
-                if (result.Success || result.IsDuplicate)
-                {
-                    payout.MarkAsPaid();
-                    successCount++;
-                }
-                else
-                {
-                    payout.Unlock();
-                    failCount++;
-                }
-            }
-            catch (DbUpdateConcurrencyException)
+            if (result.Success || result.IsDuplicate)
             {
-                _logger.LogDebug("Конфликт при обработке {PayoutId}, пропускаю", payout.Id);
+                await MarkPayoutCompletedAsync(snapshot.Id, cancellationToken);
+                return;
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Ошибка при выплате {PayoutId}", payout.Id);
-                payout.Unlock();
-                failCount++;
-            }
+
+            await ReleaseClaimAsync(snapshot.Id, cancellationToken);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The claim will become available after ClaimTimeout if shutdown interrupts processing.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to process payout {PayoutId}", snapshot.Id);
+            await ReleaseClaimAsync(snapshot.Id, CancellationToken.None);
+        }
+    }
 
+    private async Task<ClaimedPayout?> LoadClaimedPayoutAsync(
+        Guid payoutId,
+        CancellationToken cancellationToken)
+    {
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+
+        return await context.PendingPayouts
+            .AsNoTracking()
+            .Where(p =>
+                p.Id == payoutId &&
+                !p.IsPaid &&
+                p.LockedByInstance == _instanceId)
+            .Select(p => new ClaimedPayout(
+                p.Id,
+                p.PartnerExternalId,
+                p.Amount))
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task MarkPayoutCompletedAsync(
+        Guid payoutId,
+        CancellationToken cancellationToken)
+    {
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+
+        var payout = await context.PendingPayouts.SingleOrDefaultAsync(
+            p => p.Id == payoutId &&
+                 !p.IsPaid &&
+                 p.LockedByInstance == _instanceId,
+            cancellationToken);
+
+        if (payout is null)
+            return;
+
+        payout.MarkAsPaid();
         await context.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
-            "Обработка завершена. Успешно: {Success}, Ошибок: {Fail}",
-            successCount, failCount);
+            "Payout {PayoutId} completed for partner {PartnerId}",
+            payout.Id,
+            payout.PartnerExternalId);
     }
+
+    private async Task ReleaseClaimAsync(
+        Guid payoutId,
+        CancellationToken cancellationToken)
+    {
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+
+        var payout = await context.PendingPayouts.SingleOrDefaultAsync(
+            p => p.Id == payoutId &&
+                 !p.IsPaid &&
+                 p.LockedByInstance == _instanceId,
+            cancellationToken);
+
+        if (payout is null)
+            return;
+
+        payout.Unlock();
+        await context.SaveChangesAsync(cancellationToken);
+    }
+
+    private sealed record ClaimedPayout(
+        Guid Id,
+        string PartnerExternalId,
+        decimal Amount);
 }

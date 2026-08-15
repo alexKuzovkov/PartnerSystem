@@ -5,31 +5,32 @@ option csharp_namespace = "PartnerSystem.Contracts.Grpc";
 package partner;
 
 service PartnerService {
-  // Получить цепочку партнеров вверх от пользователя
+  // Returns the upward partner chain starting from a user.
   rpc GetPartnerChain(GetPartnerChainRequest) returns (GetPartnerChainResponse);
-  
-  // Добавить пользователя
+
+  // Creates a user in the hierarchy.
   rpc AddUser(AddUserRequest) returns (AddUserResponse);
-  
-  // Установить партнерскую связь
+
+  // Updates a user's direct partner relationship.
   rpc SetPartnerLink(SetPartnerLinkRequest) returns (SetPartnerLinkResponse);
-  
+
+  // Returns the user's downline hierarchy.
   rpc GetDownline(GetDownlineRequest) returns (GetDownlineResponse);
 }
 
 message GetDownlineRequest {
-    string UserExternalId = 1;
-    int32 MaxLevels = 2;
+  string user_external_id = 1;
+  int32 max_levels = 2;
 }
 
 message GetDownlineResponse {
-    repeated DownlineNode Nodes = 1;
+  repeated DownlineNode nodes = 1;
 }
 
 message DownlineNode {
-    string UserExternalId = 1;
-    int32 Level = 2;
-    int32 DirectReferralsCount = 3;
+  string user_external_id = 1;
+  int32 level = 2;
+  int32 direct_referrals_count = 3;
 }
 
 message GetPartnerChainRequest {

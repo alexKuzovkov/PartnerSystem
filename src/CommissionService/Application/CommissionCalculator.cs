@@ -1,72 +1,61 @@
-﻿using PartnerSystem.Contracts;
+using PartnerSystem.Contracts;
 
 namespace CommissionService.Application;
 
-public class CommissionCalculator : ICommissionCalculator
+public sealed class CommissionCalculator : ICommissionCalculator
 {
-    private const int MaxLevel = 10;
-
+    public const int MaximumLevel = 10;
     private const decimal PercentageDivisor = 100m;
 
     public decimal CalculateCommission(decimal profit, int level, SchemaType schemaType)
     {
-        if (profit <= 0)
-            return 0m;
-
-        if (level <= 0 || level > MaxLevel)
+        if (profit <= 0 || level is < 1 or > MaximumLevel)
             return 0m;
 
         return schemaType switch
         {
-            SchemaType.Linear => CalculateLinear(profit, level),
-            SchemaType.Fibonacci => CalculateFibonacci(profit, level),
-            _ => throw new ArgumentOutOfRangeException(nameof(schemaType), schemaType, null)
+            SchemaType.Linear => level * profit / PercentageDivisor,
+            SchemaType.Fibonacci => GetFibonacciNumber(level) * profit / PercentageDivisor,
+            _ => throw new ArgumentOutOfRangeException(nameof(schemaType), schemaType, "Unsupported commission scheme.")
         };
     }
 
-    public List<CommissionCalculationResult> CalculateChainCommissions(
+    public IReadOnlyList<CommissionCalculationResult> CalculateChainCommissions(
         decimal profit,
-        List<string> partnerChain,
+        IReadOnlyList<string> partnerChain,
         SchemaType schemaType)
     {
+        ArgumentNullException.ThrowIfNull(partnerChain);
 
-        if (profit <= 0 || partnerChain == null || partnerChain.Count == 0)
-            return new List<CommissionCalculationResult>();
+        if (profit <= 0 || partnerChain.Count == 0)
+            return [];
 
         return partnerChain
-            .Take(MaxLevel)
-            .Select((partnerId, index) => new
+            .Take(MaximumLevel)
+            .Select((partnerId, index) => new CommissionCalculationResult
             {
-                PartnerId = partnerId,
+                PartnerExternalId = partnerId,
                 Level = index + 1,
-                Amount = CalculateCommission(profit, index + 1, schemaType)
-            })
-            .Where(x => x.Amount > 0)
-            .Select(x => new CommissionCalculationResult
-            {
-                PartnerExternalId = x.PartnerId,
-                Level = x.Level,
-                Amount = x.Amount,
+                Amount = CalculateCommission(profit, index + 1, schemaType),
                 SchemaType = schemaType
             })
+            .Where(result => result.Amount > 0)
             .ToList();
     }
 
-    private static decimal CalculateLinear(decimal profit, int level)
-        => level * profit / PercentageDivisor;
-
-    private static decimal CalculateFibonacci(decimal profit, int level)
-        => GetFibonacciNumber(level) * profit / PercentageDivisor;
-
     private static decimal GetFibonacciNumber(int n)
     {
-        if (n <= 0) return 0m;
-        if (n <= 2) return 1m;
+        if (n <= 0)
+            return 0m;
+        if (n <= 2)
+            return 1m;
 
-        decimal a = 1m, b = 1m;
-        for (int i = 3; i <= n; i++)
-            (a, b) = (b, a + b);
+        decimal previous = 1m;
+        decimal current = 1m;
 
-        return b;
+        for (var index = 3; index <= n; index++)
+            (previous, current) = (current, previous + current);
+
+        return current;
     }
 }

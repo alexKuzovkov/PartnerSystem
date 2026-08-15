@@ -1,20 +1,15 @@
-﻿using CommissionService.Application;
+using CommissionService.Application;
 using FluentAssertions;
 using PartnerSystem.Contracts;
 using Xunit;
 
 namespace CommissionService.Tests;
 
-public class CommissionCalculatorTests
+public sealed class CommissionCalculatorTests
 {
-    private readonly ICommissionCalculator _calculator;
+    private readonly ICommissionCalculator _calculator = new CommissionCalculator();
 
-    public CommissionCalculatorTests()
-    {
-        _calculator = new CommissionCalculator();
-    }
-
-    #region Linear схема — одиночный расчет
+    #region Linear scheme
 
     [Theory]
     [InlineData(1000, 1, 10)]
@@ -22,8 +17,10 @@ public class CommissionCalculatorTests
     [InlineData(1000, 3, 30)]
     [InlineData(1000, 5, 50)]
     [InlineData(1000, 10, 100)]
-    public void CalculateCommission_Linear_ShouldBeCorrect(
-        decimal profit, int level, decimal expected)
+    public void CalculateCommission_LinearScheme_ReturnsExpectedAmount(
+        decimal profit,
+        int level,
+        decimal expected)
     {
         var result = _calculator.CalculateCommission(profit, level, SchemaType.Linear);
         result.Should().Be(expected);
@@ -31,7 +28,7 @@ public class CommissionCalculatorTests
 
     #endregion
 
-    #region Fibonacci схема — одиночный расчет
+    #region Fibonacci scheme
 
     [Theory]
     [InlineData(1000, 1, 10)]
@@ -44,8 +41,10 @@ public class CommissionCalculatorTests
     [InlineData(1000, 8, 210)]
     [InlineData(1000, 9, 340)]
     [InlineData(1000, 10, 550)]
-    public void CalculateCommission_Fibonacci_ShouldBeCorrect(
-        decimal profit, int level, decimal expected)
+    public void CalculateCommission_FibonacciScheme_ReturnsExpectedAmount(
+        decimal profit,
+        int level,
+        decimal expected)
     {
         var result = _calculator.CalculateCommission(profit, level, SchemaType.Fibonacci);
         result.Should().Be(expected);
@@ -53,32 +52,43 @@ public class CommissionCalculatorTests
 
     #endregion
 
-    #region Граничные случаи — одиночный расчет
-
+    #region Boundary conditions
 
     [Theory]
-    [InlineData(0, 1, SchemaType.Linear)] 
-    [InlineData(-100, 1, SchemaType.Linear)] 
-    [InlineData(-500, 3, SchemaType.Fibonacci)] 
+    [InlineData(0, 1, SchemaType.Linear)]
+    [InlineData(-100, 1, SchemaType.Linear)]
+    [InlineData(-500, 3, SchemaType.Fibonacci)]
     [InlineData(1000, 0, SchemaType.Linear)]
     [InlineData(1000, 11, SchemaType.Linear)]
     [InlineData(1000, 15, SchemaType.Fibonacci)]
     public void CalculateCommission_InvalidInput_ReturnsZero(
-        decimal profit, int level, SchemaType schema)
+        decimal profit,
+        int level,
+        SchemaType schema)
     {
-        var result = _calculator.CalculateCommission(profit, level, schema);
-        result.Should().Be(0);
+        _calculator.CalculateCommission(profit, level, schema).Should().Be(0m);
+    }
+
+    [Fact]
+    public void CalculateCommission_UnknownScheme_Throws()
+    {
+        var action = () => _calculator.CalculateCommission(1000m, 1, (SchemaType)999);
+        action.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     #endregion
 
-    #region Расчет для цепочки — общие случаи
+    #region Partner chain
 
     [Fact]
-    public void CalculateChainCommissions_Linear_ShouldCalculateForAllLevels()
+    public void CalculateChainCommissions_LinearScheme_CalculatesEveryLevel()
     {
         var partnerChain = new List<string> { "p1", "p2", "p3" };
-        var results = _calculator.CalculateChainCommissions(1000, partnerChain, SchemaType.Linear);
+
+        var results = _calculator.CalculateChainCommissions(
+            1000m,
+            partnerChain,
+            SchemaType.Linear);
 
         results.Should().HaveCount(3);
         results[0].Should().BeEquivalentTo(new { PartnerExternalId = "p1", Level = 1, Amount = 10m });
@@ -87,67 +97,55 @@ public class CommissionCalculatorTests
     }
 
     [Fact]
-    public void CalculateChainCommissions_Fibonacci_ShouldCalculateForAllLevels()
+    public void CalculateChainCommissions_FibonacciScheme_CalculatesEveryLevel()
     {
         var partnerChain = new List<string> { "p1", "p2", "p3", "p4", "p5" };
-        var results = _calculator.CalculateChainCommissions(1000, partnerChain, SchemaType.Fibonacci);
 
-        results.Should().HaveCount(5);
-        results[0].Amount.Should().Be(10m);
-        results[1].Amount.Should().Be(10m);
-        results[2].Amount.Should().Be(20m);
-        results[3].Amount.Should().Be(30m); 
-        results[4].Amount.Should().Be(50m); 
+        var results = _calculator.CalculateChainCommissions(
+            1000m,
+            partnerChain,
+            SchemaType.Fibonacci);
+
+        results.Select(x => x.Amount).Should().Equal(10m, 10m, 20m, 30m, 50m);
+        results.Should().OnlyContain(x => x.SchemaType == SchemaType.Fibonacci);
     }
 
     [Fact]
-    public void CalculateChainCommissions_ShouldStoreSchemaType()
-    {
-        var partnerChain = new List<string> { "p1" };
-
-        var linearResults = _calculator.CalculateChainCommissions(1000, partnerChain, SchemaType.Linear);
-        var fibResults = _calculator.CalculateChainCommissions(1000, partnerChain, SchemaType.Fibonacci);
-
-        linearResults[0].SchemaType.Should().Be(SchemaType.Linear);
-        fibResults[0].SchemaType.Should().Be(SchemaType.Fibonacci);
-    }
-
-    #endregion
-
-    #region Расчет для цепочки — граничные случаи
-
-    [Fact]
-    public void CalculateChainCommissions_ShouldRespectMaxLevel()
+    public void CalculateChainCommissions_MoreThanTenPartners_TruncatesAtMaximumLevel()
     {
         var partnerChain = Enumerable.Range(1, 15).Select(i => $"partner{i}").ToList();
-        var results = _calculator.CalculateChainCommissions(1000, partnerChain, SchemaType.Linear);
 
-        results.Should().HaveCount(10);
-        results.Max(r => r.Level).Should().Be(10);
+        var results = _calculator.CalculateChainCommissions(
+            1000m,
+            partnerChain,
+            SchemaType.Linear);
+
+        results.Should().HaveCount(CommissionCalculator.MaximumLevel);
+        results.Max(r => r.Level).Should().Be(CommissionCalculator.MaximumLevel);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-100)]
+    public void CalculateChainCommissions_NonPositiveProfit_ReturnsEmpty(decimal profit)
+    {
+        _calculator.CalculateChainCommissions(
+                profit,
+                new List<string> { "p1", "p2" },
+                SchemaType.Linear)
+            .Should()
+            .BeEmpty();
     }
 
     [Fact]
-    public void CalculateChainCommissions_ShouldReturnEmptyForZeroProfit()
+    public void CalculateChainCommissions_EmptyChain_ReturnsEmpty()
     {
-        var results = _calculator.CalculateChainCommissions(
-            0, new List<string> { "p1" }, SchemaType.Linear);
-        results.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void CalculateChainCommissions_ShouldReturnEmptyForNegativeProfit()
-    {
-        var results = _calculator.CalculateChainCommissions(
-            -100, new List<string> { "p1", "p2" }, SchemaType.Linear);
-        results.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void CalculateChainCommissions_ShouldReturnEmptyForEmptyChain()
-    {
-        var results = _calculator.CalculateChainCommissions(
-            1000, new List<string>(), SchemaType.Linear);
-        results.Should().BeEmpty();
+        _calculator.CalculateChainCommissions(
+                1000m,
+                Array.Empty<string>(),
+                SchemaType.Linear)
+            .Should()
+            .BeEmpty();
     }
 
     #endregion

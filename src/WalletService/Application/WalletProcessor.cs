@@ -1,15 +1,17 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using WalletService.Domain;
 using WalletService.Infrastructure;
 
 namespace WalletService.Application;
 
-public class WalletProcessor : IWalletProcessor
+public sealed class WalletProcessor : IWalletProcessor
 {
     private readonly WalletDbContext _context;
     private readonly ILogger<WalletProcessor> _logger;
 
-    public WalletProcessor(WalletDbContext context, ILogger<WalletProcessor> logger)
+    public WalletProcessor(
+        WalletDbContext context,
+        ILogger<WalletProcessor> logger)
     {
         _context = context;
         _logger = logger;
@@ -18,82 +20,102 @@ public class WalletProcessor : IWalletProcessor
     public async Task<DepositResult> DepositCommissionAsync(
         string userExternalId,
         decimal amount,
-        string commissionEventExternalId, CancellationToken cancellationToken)
+        string commissionIdempotencyKey,
+        CancellationToken cancellationToken)
     {
-        var existingTransaction = await _context.Transactions
-            .AnyAsync(t =>
-                t.UserExternalId == userExternalId &&
-                t.CommissionEventExternalId == commissionEventExternalId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(userExternalId))
+            throw new ArgumentException("User external id is required.", nameof(userExternalId));
+        if (string.IsNullOrWhiteSpace(commissionIdempotencyKey))
+            throw new ArgumentException("Commission idempotency key is required.", nameof(commissionIdempotencyKey));
+        if (amount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(amount), "Commission amount must be positive.");
 
-        if (existingTransaction)
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        var now = DateTime.UtcNow;
+        var transactionId = Guid.NewGuid();
+
+        // The transaction row is the idempotency gate. PostgreSQL evaluates the unique index
+        // atomically, so concurrent workers cannot credit the same commission twice.
+        var insertedTransactions = await _context.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO "Transactions"
+                ("Id", "UserExternalId", "Amount", "CommissionEventExternalId", "CreatedAt")
+            VALUES
+                ({transactionId}, {userExternalId}, {amount}, {commissionIdempotencyKey}, {now})
+            ON CONFLICT ("UserExternalId", "CommissionEventExternalId") DO NOTHING
+            """, cancellationToken);
+
+        if (insertedTransactions == 0)
         {
-            _logger.LogWarning("Комиссия {CommissionId} уже выплачена пользователю {UserId}",
-                commissionEventExternalId, userExternalId);
+            await transaction.RollbackAsync(cancellationToken);
+
+            _logger.LogInformation(
+                "Commission {CommissionId} was already deposited for user {UserId}",
+                commissionIdempotencyKey,
+                userExternalId);
+
             return new DepositResult
             {
                 Success = false,
-                Message = "Commission already paid",
+                Message = "Commission already deposited",
                 IsDuplicate = true
             };
         }
 
-        var wallet = await _context.Wallets
-            .FirstOrDefaultAsync(w => w.UserExternalId == userExternalId, cancellationToken);
+        // Upsert + increment prevents lost updates when different service instances credit the
+        // same wallet concurrently.
+        var walletId = Guid.NewGuid();
+        await _context.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO "Wallets"
+                ("Id", "UserExternalId", "Balance", "CreatedAt", "UpdatedAt")
+            VALUES
+                ({walletId}, {userExternalId}, {amount}, {now}, {now})
+            ON CONFLICT ("UserExternalId") DO UPDATE
+            SET "Balance" = "Wallets"."Balance" + EXCLUDED."Balance",
+                "UpdatedAt" = EXCLUDED."UpdatedAt"
+            """, cancellationToken);
 
-        if (wallet == null)
-        {
-            wallet = new Wallet(userExternalId);
-            await _context.Wallets.AddAsync(wallet, cancellationToken);
-        }
+        await transaction.CommitAsync(cancellationToken);
 
-        wallet.AddBalance(amount);
+        var newBalance = await _context.Wallets
+            .AsNoTracking()
+            .Where(w => w.UserExternalId == userExternalId)
+            .Select(w => w.Balance)
+            .SingleAsync(cancellationToken);
 
-        var transaction = new WalletTransaction(
-            userExternalId,
+        _logger.LogInformation(
+            "Deposited {Amount} into wallet {UserId} for commission {CommissionId}",
             amount,
-            commissionEventExternalId);
+            userExternalId,
+            commissionIdempotencyKey);
 
-        await _context.Transactions.AddAsync(transaction, cancellationToken);
-
-        try
+        return new DepositResult
         {
-            await _context.SaveChangesAsync(cancellationToken);
-
-            _logger.LogInformation("Начислено {Amount} на кошелек {UserId} по комиссии {CommissionId}",
-                amount, userExternalId, commissionEventExternalId);
-
-            return new DepositResult
-            {
-                Success = true,
-                Message = "Commission deposited",
-                NewBalance = wallet.Balance
-            };
-        }
-        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("duplicate key") == true)
-        {
-            _logger.LogWarning("Попытка двойного начисления комиссии {CommissionId}", commissionEventExternalId);
-            return new DepositResult
-            {
-                Success = false,
-                Message = "Duplicate commission",
-                IsDuplicate = true
-            };
-        }
+            Success = true,
+            Message = "Commission deposited",
+            NewBalance = newBalance
+        };
     }
 
-    public async Task<decimal> GetBalance(string userExternalId, CancellationToken cancellationToken)
+    public async Task<decimal> GetBalanceAsync(
+        string userExternalId,
+        CancellationToken cancellationToken)
     {
         var wallet = await _context.Wallets
-            .FirstOrDefaultAsync(w => w.UserExternalId == userExternalId, cancellationToken);
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                w => w.UserExternalId == userExternalId,
+                cancellationToken);
 
-        return wallet?.Balance ?? 0;
+        return wallet?.Balance ?? 0m;
     }
 
-    public async Task<List<WalletTransaction>> GetTransactionHistory(string userExternalId, CancellationToken cancellationToken)
-    {
-        return await _context.Transactions
+    public Task<List<WalletTransaction>> GetTransactionHistoryAsync(
+        string userExternalId,
+        CancellationToken cancellationToken) =>
+        _context.Transactions
+            .AsNoTracking()
             .Where(t => t.UserExternalId == userExternalId)
             .OrderByDescending(t => t.CreatedAt)
             .ToListAsync(cancellationToken);
-    }
 }

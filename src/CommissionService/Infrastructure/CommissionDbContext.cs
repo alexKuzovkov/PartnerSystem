@@ -1,4 +1,6 @@
-﻿using Microsoft.EntityFrameworkCore;
+using CommissionService.Domain;
+using MassTransit;
+using Microsoft.EntityFrameworkCore;
 
 namespace CommissionService.Infrastructure;
 
@@ -31,7 +33,6 @@ public class CommissionDbContext : DbContext
                 .IsUnique();
 
             entity.HasIndex(e => e.PartnerExternalId);
-            entity.HasIndex(e => e.IsPaid);
 
             entity.Property(e => e.SchemaType)
                 .HasConversion<string>()
@@ -40,5 +41,9 @@ public class CommissionDbContext : DbContext
             entity.Property(e => e.Amount)
                 .HasColumnType("decimal(18,2)");
         });
+
+        modelBuilder.AddInboxStateEntity();
+        modelBuilder.AddOutboxMessageEntity();
+        modelBuilder.AddOutboxStateEntity();
     }
 }

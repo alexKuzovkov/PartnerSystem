@@ -1,26 +1,23 @@
-﻿namespace PartnerSystem.Contracts;
+namespace PartnerSystem.Contracts;
 
 /// <summary>
-/// DTO пользователя
+/// User API contract.
 /// </summary>
 public record UserDto(
     string ExternalId,
     string? ParentExternalId,
-    DateTime CreatedAt
-);
+    DateTime CreatedAt);
 
 /// <summary>
-/// Запрос на создание пользователя
+/// Request used to create a user in the partner hierarchy.
 /// </summary>
 public record CreateUserRequest(
     string ExternalId,
-    string? ParentExternalId
-);
+    string? ParentExternalId);
 
 /// <summary>
-/// Информация о партнерской цепочке (вверх)
+/// One item in the upward partner chain.
 /// </summary>
 public record PartnerChainItem(
     string ExternalId,
-    int Level
-);
+    int Level);

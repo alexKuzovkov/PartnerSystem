@@ -82,21 +82,21 @@ $RECYCLE.BIN/
 # ============================================
 # Docker
 # ============================================
-# Docker volumes (не коммитим данные контейнеров)
+# Docker volumes (do not commit container data)
 docker_data/
 
-# Docker compose override для локальной разработки (опционально)
+# Docker Compose override for local development (optional)
 # docker-compose.override.yml
 
 # ============================================
 # Environment / Secrets
 # ============================================
-# Локальные переменные окружения
+# Local environment variables
 .env
 .env.local
 .env.*.local
 
-# Файлы с секретами
+# Secret files
 *.pfx
 *.key
 *.cer
@@ -122,7 +122,7 @@ coverage/
 # ============================================
 # Entity Framework
 # ============================================
-# Миграции БД (если не хочешь коммитить — раскомментируй)
+# Database migrations (uncomment if you intentionally do not want to commit them)
 # **/Migrations/
 
 # ============================================
@@ -153,18 +153,18 @@ coverage/
 # ============================================
 # Specific to this project
 # ============================================
-# Результаты тестов
+# Test results
 test_results.txt
 test_output/
 
-# Локальные скрипты (если есть)
+# Local scripts (if present)
 local_*.sh
 local_*.ps1
 
 # ============================================
-# Keep these files (НЕ игнорировать)
+# Keep these files (do not ignore)
 # ============================================
-# Раскомментируй, если случайно игнорируются нужные файлы
+# Uncomment if required files are accidentally ignored
 #!docker-compose.yml
 #!README.md
 #!test_all.sh

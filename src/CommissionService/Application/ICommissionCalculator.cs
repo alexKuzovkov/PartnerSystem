@@ -1,19 +1,20 @@
-﻿using PartnerSystem.Contracts;
+using PartnerSystem.Contracts;
 
 namespace CommissionService.Application;
 
 public interface ICommissionCalculator
 {
     decimal CalculateCommission(decimal profit, int level, SchemaType schemaType);
-    List<CommissionCalculationResult> CalculateChainCommissions(
+
+    IReadOnlyList<CommissionCalculationResult> CalculateChainCommissions(
         decimal profit,
-        List<string> partnerChain,
+        IReadOnlyList<string> partnerChain,
         SchemaType schemaType);
 }
 
-public record CommissionCalculationResult
+public sealed record CommissionCalculationResult
 {
-    public string PartnerExternalId { get; init; } = null!;
+    public required string PartnerExternalId { get; init; }
     public int Level { get; init; }
     public decimal Amount { get; init; }
     public SchemaType SchemaType { get; init; }

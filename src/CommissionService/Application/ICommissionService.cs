@@ -1,17 +1,22 @@
-﻿using PartnerSystem.Contracts;
+using PartnerSystem.Contracts;
 
 namespace CommissionService.Application;
 
 public interface ICommissionService
 {
-    Task ProcessCommissionCalculation(CommissionCalculationRequest request);
-    Task<CommissionDetailsDto> GetCommissionDetails(string eventExternalId);
+    Task ProcessCommissionCalculationAsync(
+        CommissionCalculationRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<CommissionDetailsDto> GetCommissionDetailsAsync(
+        string eventExternalId,
+        CancellationToken cancellationToken = default);
 }
 
 public record CommissionCalculationRequest
 {
-    public string EventExternalId { get; init; } = null!;
-    public string UserExternalId { get; init; } = null!;
+    public required string EventExternalId { get; init; }
+    public required string UserExternalId { get; init; }
     public decimal Profit { get; init; }
     public DateTime OccurredAt { get; init; }
     public SchemaType SchemaType { get; init; }
@@ -19,15 +24,14 @@ public record CommissionCalculationRequest
 
 public record CommissionDetailsDto
 {
-    public string EventExternalId { get; init; } = null!;
-    public List<CommissionItemDto> Commissions { get; init; } = new();
+    public required string EventExternalId { get; init; }
+    public List<CommissionItemDto> Commissions { get; init; } = [];
 }
 
 public record CommissionItemDto
 {
-    public string PartnerExternalId { get; init; } = null!;
+    public required string PartnerExternalId { get; init; }
     public int Level { get; init; }
     public decimal Amount { get; init; }
     public SchemaType SchemaType { get; init; }
-    public bool IsPaid { get; init; }
 }

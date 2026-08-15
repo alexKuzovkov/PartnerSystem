@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using WalletService.Domain;
 
 namespace WalletService.Infrastructure;
@@ -47,11 +47,9 @@ public class WalletDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
 
-            entity.Property(e => e.RowVersion)
-                .IsRowVersion();
-
             entity.HasIndex(e => new { e.IsPaid, e.LockedAt });
-            entity.HasIndex(e => e.CommissionEventExternalId).IsUnique();
+            entity.HasIndex(e => new { e.CommissionEventExternalId, e.PartnerExternalId, e.Level })
+                .IsUnique();
         });
     }
 }

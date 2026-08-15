@@ -1,6 +1,5 @@
 using EventService.Application;
 using EventService.Infrastructure;
-using EventService.Infrastructure.Outbox;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
@@ -23,13 +22,6 @@ builder.Services.AddHealthChecks()
     .AddCheck("self", () => Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Healthy())
     .AddNpgSql(builder.Configuration.GetConnectionString("DefaultConnection")!, name: "database");
 
-var rabbitMqHost = builder.Configuration["RabbitMQ:HostName"];
-if (!string.IsNullOrWhiteSpace(rabbitMqHost))
-{
-    var rabbitMqUserName = builder.Configuration["RabbitMQ:UserName"] ?? "guest";
-    var rabbitMqPassword = builder.Configuration["RabbitMQ:Password"] ?? "guest";
-}
-
 builder.Services.AddMassTransit(x =>
 {
     x.SetKebabCaseEndpointNameFormatter();
@@ -46,13 +38,9 @@ builder.Services.AddMassTransit(x =>
 
         cfg.ReceiveEndpoint("event-service", e =>
         {
-            e.ConfigureConsumer<ProfitEventConsumer>(context);
-
-            e.ConcurrentMessageLimit = 16; 
-            e.PrefetchCount = 16;        
-
+            e.ConcurrentMessageLimit = 16;
+            e.PrefetchCount = 16;
             e.UseMessageRetry(r => r.Interval(3, TimeSpan.FromSeconds(5)));
-
             e.UseCircuitBreaker(cb =>
             {
                 cb.TrackingPeriod = TimeSpan.FromMinutes(1);
@@ -60,9 +48,9 @@ builder.Services.AddMassTransit(x =>
                 cb.ActiveThreshold = 5;
                 cb.ResetInterval = TimeSpan.FromMinutes(5);
             });
+            e.UseEntityFrameworkOutbox<EventDbContext>(context);
+            e.ConfigureConsumer<ProfitEventConsumer>(context);
         });
-
-        cfg.ConfigureEndpoints(context);
     });
 
     x.AddEntityFrameworkOutbox<EventDbContext>(entityFrameworkOutboxOptions =>
@@ -73,7 +61,6 @@ builder.Services.AddMassTransit(x =>
     });
 });
 
-builder.Services.AddHostedService<OutboxProcessor>();
 
 builder.Services.AddScoped<IEventProcessor, EventProcessor>();
 builder.Services.AddScoped<IEventService, EventService.Application.EventService>();
