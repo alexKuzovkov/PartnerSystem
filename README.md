@@ -1,31 +1,35 @@
 # PartnerSystem
 
-A distributed .NET 8 backend that models a multi-level partner commission and payout workflow.
+[![CI](https://github.com/alexKuzovkov/PartnerSystem/actions/workflows/ci.yml/badge.svg)](https://github.com/alexKuzovkov/PartnerSystem/actions/workflows/ci.yml)
+![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1)
 
-The project is intentionally designed as a backend engineering portfolio example: it demonstrates service boundaries, asynchronous messaging, transactional outbox, idempotency, PostgreSQL concurrency control, gRPC, Redis caching, background processing, health checks, Docker-based local infrastructure, and automated tests.
+**Distributed .NET 8 backend system for multi-level partner commissions and payouts.**
 
-## Highlights
+PartnerSystem is a portfolio-grade microservice project focused on engineering problems that appear in real distributed systems: reliable asynchronous messaging, transactional consistency, idempotency, concurrent background processing, service-to-service communication, caching, database isolation, and full-stack automated testing.
 
-- **.NET 8 / ASP.NET Core** microservices
-- **PostgreSQL 16** with a separate database per service
-- **RabbitMQ + MassTransit** for asynchronous integration
-- **MassTransit EF Bus Outbox** in EventService and CommissionService
-- **gRPC** for low-latency CommissionService → UserService calls
-- **Redis** cache for partner-chain lookups
-- **Database-backed idempotency** at every important write boundary
-- **`FOR UPDATE SKIP LOCKED`** for horizontally scalable payout workers
-- **Atomic PostgreSQL wallet upsert** to avoid lost updates under concurrent deposits
-- **Serilog** structured logging and health checks
+> The project is intentionally built to demonstrate backend engineering decisions rather than only CRUD endpoints.
+
+## What this project demonstrates
+
+- **.NET 8 / ASP.NET Core** microservices with clear service boundaries
+- **RabbitMQ + MassTransit** for asynchronous event-driven communication
+- **Transactional Outbox** in EventService and CommissionService
+- **Database-backed idempotency** across events, commissions, payouts, and wallet credits
+- **gRPC** for low-latency synchronous service-to-service communication
+- **Redis** caching for partner-chain lookups
+- **PostgreSQL `FOR UPDATE SKIP LOCKED`** for horizontally scalable payout workers
+- **Atomic wallet updates** designed to avoid lost updates under concurrent deposits
+- **Serilog + health checks** for operational visibility
 - **Docker Compose** for the complete local environment
-- **xUnit + FluentAssertions** unit tests
-- **Bash and PowerShell** end-to-end test runners
-- **GitHub Actions** build and test workflow
+- **Unit tests + full PowerShell E2E suite** executed in GitHub Actions
 
-## Architecture
+## Architecture at a glance
 
 ```mermaid
 flowchart LR
-    Client[REST client] --> US[UserService]
+    Client[REST Client] --> US[UserService]
     Client --> ES[EventService]
     Client --> CS[CommissionService]
     Client --> WS[WalletService]
@@ -34,7 +38,7 @@ flowchart LR
     RMQ --> CS
 
     CS -->|gRPC| US
-    CS -->|partner-chain cache| Redis[(Redis)]
+    CS -->|Partner chain cache| Redis[(Redis)]
     CS -->|CommissionCalculated| RMQ
     RMQ --> WS
 
@@ -44,16 +48,16 @@ flowchart LR
     WS --> WDB[(wallets_db)]
 ```
 
-### Service responsibilities
+### Services
 
 | Service | Responsibility |
 |---|---|
-| **UserService** | User hierarchy, parent relationships, upward partner chain, downline projection, gRPC API |
+| **UserService** | User hierarchy, parent relationships, partner-chain traversal, downline projection, gRPC API |
 | **EventService** | Accepts profit/loss events, guarantees event idempotency, publishes commission requests through a transactional outbox |
-| **CommissionService** | Reads the active calculation scheme, resolves partner chains, calculates commissions, persists results, publishes payout events through a transactional outbox |
-| **WalletService** | Stores pending payouts, claims work across multiple instances, credits wallets atomically, keeps idempotent transaction history |
+| **CommissionService** | Resolves partner chains, calculates commissions, persists results, publishes payout events through a transactional outbox |
+| **WalletService** | Stores pending payouts, claims work across instances, credits wallets atomically, keeps idempotent transaction history |
 
-## Event flow
+## End-to-end flow
 
 ```mermaid
 sequenceDiagram
@@ -70,68 +74,60 @@ sequenceDiagram
     participant WalletDb as wallets_db
 
     Client->>EventService: POST /api/events
-    EventService->>EventDb: ProfitEvent + MassTransit outbox message
-    EventDb-->>EventService: atomic commit
+    EventService->>EventDb: ProfitEvent + outbox message
+    EventDb-->>EventService: Atomic commit
     EventService-->>Client: 202 Accepted
 
     EventDb->>RabbitMQ: CommissionCalculationRequested
-    RabbitMQ->>CommissionService: consume
+    RabbitMQ->>CommissionService: Consume
 
-    CommissionService->>Redis: partner-chain lookup
-    alt cache miss
+    CommissionService->>Redis: Partner-chain lookup
+    alt Cache miss
         CommissionService->>UserService: gRPC GetPartnerChain
-        UserService-->>CommissionService: partner ids
-        CommissionService->>Redis: cache partner chain
+        UserService-->>CommissionService: Partner IDs
+        CommissionService->>Redis: Cache partner chain
     end
 
-    CommissionService->>CommissionDb: Commissions + MassTransit outbox messages
-    CommissionDb-->>CommissionService: atomic commit
+    CommissionService->>CommissionDb: Commissions + outbox messages
+    CommissionDb-->>CommissionService: Atomic commit
     CommissionDb->>RabbitMQ: CommissionCalculated x N
 
-    RabbitMQ->>WalletService: consume payout events
-    WalletService->>WalletDb: create idempotent PendingPayout rows
+    RabbitMQ->>WalletService: Consume payout events
+    WalletService->>WalletDb: Create idempotent PendingPayout rows
 
-    loop background payout worker
-        WalletService->>WalletDb: claim batch with FOR UPDATE SKIP LOCKED
-        WalletService->>WalletDb: insert transaction + atomic wallet upsert
-        WalletService->>WalletDb: mark payout paid
+    loop Background payout worker
+        WalletService->>WalletDb: Claim batch with FOR UPDATE SKIP LOCKED
+        WalletService->>WalletDb: Insert transaction + atomic wallet update
+        WalletService->>WalletDb: Mark payout paid
     end
 ```
 
 ## Reliability and consistency
 
-### Transactional outbox
+### Transactional Outbox
 
-EventService and CommissionService use **MassTransit Entity Framework Bus Outbox**.
-
-The important ordering is deliberate:
+EventService and CommissionService use the **MassTransit Entity Framework Bus Outbox**.
 
 1. Modify domain data in the service `DbContext`.
-2. Call `IPublishEndpoint.Publish(...)`.
+2. Publish integration events through `IPublishEndpoint`.
 3. Call `SaveChangesAsync(...)` once.
-4. EF commits domain rows and MassTransit outbox rows atomically.
-5. MassTransit delivers the persisted messages to RabbitMQ after the database commit.
+4. Domain rows and MassTransit outbox rows are committed atomically.
+5. Persisted messages are delivered to RabbitMQ after the database commit.
 
-This prevents the classic failure mode where the database commit succeeds but the broker publish fails.
+This prevents the classic distributed-systems failure mode where the database commit succeeds but broker publication fails.
 
 ### Idempotency boundaries
-
-The database is treated as the final source of truth for duplicate protection.
 
 | Stage | Idempotency key |
 |---|---|
 | Profit event | `ProfitEvents.EventExternalId` |
 | Commission | `(EventExternalId, PartnerExternalId, Level)` |
 | Pending payout | `(CommissionEventExternalId, PartnerExternalId, Level)` |
-| Wallet credit | `(UserExternalId, CommissionEventExternalId)` in `Transactions` |
-
-The pending-payout composite key is important because one source event can generate several partner commissions. Using only the event id would incorrectly allow just one payout per event.
+| Wallet credit | `(UserExternalId, CommissionEventExternalId)` |
 
 ### Concurrent payout processing
 
-Payout workers do **not** use a global advisory lock.
-
-Each worker claims a small batch using PostgreSQL:
+Workers claim batches through PostgreSQL row-level locking:
 
 ```sql
 SELECT *
@@ -143,56 +139,7 @@ FOR UPDATE SKIP LOCKED
 LIMIT @batchSize;
 ```
 
-The selected rows are marked with an instance id and claim timestamp in a short transaction. Other service instances skip rows locked by the current transaction and can claim different work immediately.
-
-If an instance dies after claiming a row, the claim becomes eligible again after the configured timeout.
-
-### Concurrent wallet credits
-
-Wallet credits use two PostgreSQL operations in one transaction:
-
-1. Insert the transaction row with `ON CONFLICT DO NOTHING` as the idempotency gate.
-2. Upsert the wallet and increment the balance atomically.
-
-This avoids both duplicate credits and lost updates when several workers deposit into the same wallet concurrently.
-
-## Commission schemes
-
-Two calculation modes are supported.
-
-### Linear
-
-For hierarchy level `L` and profit `P`:
-
-```text
-commission = L * P / 100
-```
-
-For `P = 1000`:
-
-| Level | Commission |
-|---:|---:|
-| 1 | 10 |
-| 2 | 20 |
-| 3 | 30 |
-
-### Fibonacci
-
-```text
-commission = Fibonacci(L) * P / 100
-```
-
-For `P = 1000`:
-
-| Level | Fibonacci | Commission |
-|---:|---:|---:|
-| 1 | 1 | 10 |
-| 2 | 1 | 10 |
-| 3 | 2 | 20 |
-| 4 | 3 | 30 |
-| 5 | 5 | 50 |
-
-The active scheme is stored in `SchemaSettings`. Each persisted commission stores the scheme used for its calculation, so changing the setting does not rewrite historical results.
+This allows multiple WalletService instances to process different batches concurrently while avoiding duplicate processing.
 
 ## Technology stack
 
@@ -202,268 +149,71 @@ The active scheme is stored in `SchemaSettings`. Each persisted commission store
 | ORM | Entity Framework Core 8 |
 | Database | PostgreSQL 16 |
 | Messaging | RabbitMQ 3.13, MassTransit 8 |
-| Service-to-service RPC | gRPC |
+| RPC | gRPC |
 | Cache | Redis 7 |
 | Logging | Serilog |
-| API documentation | Swagger / OpenAPI |
-| Tests | xUnit, FluentAssertions |
+| API docs | Swagger / OpenAPI |
+| Tests | xUnit, FluentAssertions, PowerShell E2E |
 | Containers | Docker, Docker Compose |
 | CI | GitHub Actions |
 
-## Repository layout
-
-```text
-PartnerSystem/
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-├── .editorconfig
-├── .env.example
-├── src/
-│   ├── UserService/
-│   ├── EventService/
-│   ├── CommissionService/
-│   ├── WalletService/
-│   └── Shared/
-│       └── PartnerSystem.Contracts/
-├── tests/
-│   ├── CommissionService.Tests/
-│   └── WalletService.Tests/
-├── Directory.Build.props
-├── Directory.Packages.props
-├── PartnerSystem.slnx
-├── docker-compose.yml
-├── init-db.sh
-├── test_all.sh
-├── test_all.ps1
-└── README.md
-```
-
 ## Quick start
 
-### Prerequisites
+### Full-stack E2E on Windows
 
-- Docker Desktop or Docker Engine with Compose v2
-- Optional: .NET 8 SDK for running unit tests outside containers
-- Optional: PowerShell 5.1+ or PowerShell 7 for the Windows end-to-end runner
-
-### Start the full environment
-
-The Compose file has development defaults. To override local credentials, copy the example environment file and edit it:
-
-```bash
-cp .env.example .env
+```powershell
+.\test_all.ps1 -StartServices
 ```
 
-Then start the stack:
+### Full-stack E2E on Linux / macOS / WSL
 
 ```bash
-docker compose up -d --build
+./test_all.sh --start
 ```
 
-Check container status:
+The runner builds and starts PostgreSQL, RabbitMQ, Redis, and all four application services before executing the distributed workflow.
 
-```bash
-docker compose ps
-```
-
-The PostgreSQL initialization script creates four databases automatically:
-
-- `users_db`
-- `events_db`
-- `commissions_db`
-- `wallets_db`
-
-If you previously ran an older schema version of this project, reset local volumes before the first run of the refactored version:
-
-```bash
-docker compose down -v
-docker compose up -d --build
-```
-
-### Service endpoints
-
-| Service | URL |
-|---|---|
-| UserService REST | `http://localhost:5001` |
-| EventService | `http://localhost:5002` |
-| CommissionService | `http://localhost:5003` |
-| WalletService | `http://localhost:5004` |
-| RabbitMQ Management | `http://localhost:15672` |
-
-UserService exposes gRPC internally on port `8080` and REST/health checks on port `8081` inside its container.
-
-## API examples
-
-### Create a hierarchy
-
-```bash
-curl -X POST http://localhost:5001/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"externalId":"root"}'
-
-curl -X POST http://localhost:5001/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"externalId":"alice","parentExternalId":"root"}'
-
-curl -X POST http://localhost:5001/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"externalId":"bob","parentExternalId":"alice"}'
-
-curl -X POST http://localhost:5001/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"externalId":"charlie","parentExternalId":"bob"}'
-```
-
-Get the upward partner chain:
-
-```bash
-curl http://localhost:5001/api/users/charlie/chain
-```
-
-Get the downline:
-
-```bash
-curl http://localhost:5001/api/users/root/downline
-```
-
-### Select the calculation scheme
-
-```bash
-curl -X POST http://localhost:5003/api/admin/schema \
-  -H "Content-Type: application/json" \
-  -d '{"schema":"Linear"}'
-```
-
-or:
-
-```bash
-curl -X POST http://localhost:5003/api/admin/schema \
-  -H "Content-Type: application/json" \
-  -d '{"schema":"Fibonacci"}'
-```
-
-### Submit a profit event
-
-```bash
-curl -X POST http://localhost:5002/api/events \
-  -H "Content-Type: application/json" \
-  -d '{
-    "eventExternalId":"evt-001",
-    "userExternalId":"charlie",
-    "profit":1000,
-    "occurredAt":"2026-08-15T10:00:00Z"
-  }'
-```
-
-### Read calculated commissions
-
-```bash
-curl http://localhost:5003/api/commissions/evt-001
-```
-
-### Read wallet state
-
-```bash
-curl http://localhost:5004/api/wallets/alice/balance
-curl http://localhost:5004/api/wallets/alice/transactions
-```
-
-## Testing
+## Testing strategy
 
 ### Unit tests
-
-Run all unit test projects:
 
 ```bash
 dotnet test tests/CommissionService.Tests/CommissionService.Tests.csproj
 dotnet test tests/WalletService.Tests/WalletService.Tests.csproj
 ```
 
-The tests cover commission formulas, boundary conditions, domain invariants, wallet balance rules, and payout claim state transitions.
+### End-to-end coverage
 
-### End-to-end tests on Linux / macOS / WSL
-
-If the services are already running:
-
-```bash
-./test_all.sh
-```
-
-Build and start the stack automatically before testing:
-
-```bash
-./test_all.sh --start
-```
-
-### End-to-end tests on Windows PowerShell
-
-If the services are already running:
-
-```powershell
-.\test_all.ps1
-```
-
-Build and start the stack automatically:
+The CI workflow executes the same PowerShell suite used locally:
 
 ```powershell
 .\test_all.ps1 -StartServices
 ```
 
-The GitHub Actions workflow runs the PowerShell end-to-end suite against the full Docker Compose stack after the build and unit-test job succeeds.
+The suite validates:
 
-The end-to-end suite validates:
-
-1. Service health checks
-2. User hierarchy creation
+1. Health checks for all services
+2. Partner hierarchy creation
 3. Upward chain and downline queries
 4. Linear commission calculation
-5. Multi-level payouts reaching **every** partner wallet
+5. Multi-level payouts reaching every partner wallet
 6. Fibonacci calculation and historical scheme immutability
 7. Duplicate-event idempotency
 8. Negative-profit behavior
 
-## Development checks
-
-Validate Docker Compose configuration:
-
-```bash
-docker compose config --quiet
-```
-
-Inspect logs:
-
-```bash
-docker compose logs --tail=200
-```
-
-Stop services:
-
-```bash
-docker compose down
-```
-
-Stop services and remove local data:
-
-```bash
-docker compose down -v
-```
+A successful run currently covers **22 end-to-end assertions** across the complete Docker Compose environment.
 
 ## Engineering trade-offs
 
 This repository focuses on distributed backend patterns rather than production platform completeness.
 
-Deliberately out of scope for the demo:
+Deliberately out of scope:
 
 - End-user authentication and authorization
 - TLS termination and certificate management
-- Secret management through Vault / cloud secret stores
+- External secret management
 - OpenTelemetry collector and external metrics backend
 - Kubernetes deployment manifests
 - Multi-region database replication
 
-The Docker Compose credentials are local-development defaults only and must not be used in a real environment.
-
-## Suggested GitHub topics
-
-`dotnet` · `csharp` · `aspnet-core` · `microservices` · `distributed-systems` · `rabbitmq` · `masstransit` · `postgresql` · `redis` · `grpc` · `transactional-outbox` · `idempotency` · `docker`
+The Docker Compose credentials are local-development defaults only and must not be used in production.
