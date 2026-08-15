@@ -1,4 +1,5 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -u
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -8,195 +9,205 @@ NC='\033[0m'
 
 PASS=0
 FAIL=0
+RUN_ID=$(date +%s)
+START_SERVICES=false
 
-# ✅ Уникальный префикс для каждого запуска
-TIMESTAMP=$(date +%s)
+if [[ "${1:-}" == "--start" ]]; then
+  START_SERVICES=true
+fi
 
-check() {
-    local name=$1
-    local expected=$2
-    local actual=$3
-    
-    if echo "$actual" | grep -qi "$expected"; then
-        echo -e "${GREEN}✓ $name${NC}"
-        ((PASS++))
-    else
-        echo -e "${RED}✗ $name${NC}"
-        echo "  Expected: $expected"
-        echo "  Actual: $(echo "$actual" | head -c 300)"
-        ((FAIL++))
-    fi
+pass() {
+  echo -e "${GREEN}[PASS] $1${NC}"
+  PASS=$((PASS + 1))
 }
 
-header() {
-    echo -e "\n${CYAN}========================================${NC}"
-    echo -e "${CYAN} $1${NC}"
-    echo -e "${CYAN}========================================${NC}"
+fail() {
+  echo -e "${RED}[FAIL] $1${NC}"
+  echo "       $2"
+  FAIL=$((FAIL + 1))
 }
 
 section() {
-    echo -e "\n${YELLOW}[$1] $2${NC}"
+  echo -e "\n${YELLOW}[$1] $2${NC}"
 }
 
-# ============================================
-# 1. Health Checks
-# ============================================
-header "1/8 Health Checks"
+get() {
+  curl -sS --max-time 10 "$1" 2>/dev/null || true
+}
 
-check "UserService" "Healthy" "$(curl -sf http://localhost:5001/health 2>/dev/null || echo 'FAIL')"
-check "EventService" "Healthy" "$(curl -sf http://localhost:5002/health 2>/dev/null || echo 'FAIL')"
-check "CommissionService" "Healthy" "$(curl -sf http://localhost:5003/health 2>/dev/null || echo 'FAIL')"
-check "WalletService" "Healthy" "$(curl -sf http://localhost:5004/health 2>/dev/null || echo 'FAIL')"
-
-# ============================================
-# 2. Создание иерархии пользователей
-# ============================================
-section "2/8" "Создание иерархии пользователей"
-
-# ✅ Используем уникальные имена с временной меткой
-curl -sf -X POST http://localhost:5001/api/users \
-  -H "Content-Type: application/json" \
-  -d "{\"externalId\":\"root_$TIMESTAMP\"}" > /dev/null 2>&1 || true
-
-curl -sf -X POST http://localhost:5001/api/users \
-  -H "Content-Type: application/json" \
-  -d "{\"externalId\":\"u1_$TIMESTAMP\",\"parentExternalId\":\"root_$TIMESTAMP\"}" > /dev/null 2>&1 || true
-
-curl -sf -X POST http://localhost:5001/api/users \
-  -H "Content-Type: application/json" \
-  -d "{\"externalId\":\"u2_$TIMESTAMP\",\"parentExternalId\":\"u1_$TIMESTAMP\"}" > /dev/null 2>&1 || true
-
-curl -sf -X POST http://localhost:5001/api/users \
-  -H "Content-Type: application/json" \
-  -d "{\"externalId\":\"u3_$TIMESTAMP\",\"parentExternalId\":\"u2_$TIMESTAMP\"}" > /dev/null 2>&1 || true
-
-echo -e "${GREEN}✓ Создана иерархия root → u1 → u2 → u3 (timestamp: $TIMESTAMP)${NC}"
-((PASS++))
-
-# ============================================
-# 3. Ветки дерева
-# ============================================
-section "3/8" "Ветки дерева"
-
-CHAIN=$(curl -sf http://localhost:5001/api/users/u3_$TIMESTAMP/chain 2>/dev/null || echo "")
-check "Ветка вверх u3 содержит u2" "u2" "$CHAIN"
-check "Ветка вверх u3 содержит u1" "u1" "$CHAIN"
-check "Ветка вверх u3 содержит root" "root" "$CHAIN"
-
-DOWNLINE=$(curl -sf http://localhost:5001/api/users/root_$TIMESTAMP/downline 2>/dev/null || echo "")
-check "Ветка вниз root содержит u1" "u1" "$DOWNLINE"
-check "Ветка вниз root содержит u2" "u2" "$DOWNLINE"
-check "Ветка вниз root содержит u3" "u3" "$DOWNLINE"
-
-# ============================================
-# 4. Linear схема
-# ============================================
-section "4/8" "Linear схема (L × Profit / 100)"
-
-curl -sf -X POST http://localhost:5003/api/admin/schema \
-  -H "Content-Type: application/json" \
-  -d '{"schema":"Linear"}' > /dev/null 2>&1 || true
-
-# ✅ Уникальное имя события
-curl -sf -X POST http://localhost:5002/api/events \
-  -H "Content-Type: application/json" \
-  -d "{\"eventExternalId\":\"linear_$TIMESTAMP\",\"userExternalId\":\"u3_$TIMESTAMP\",\"profit\":1000}" > /dev/null 2>&1
-
-echo "Ждём обработки 15 секунд..."
-sleep 15
-
-COMMISSIONS=$(curl -sf http://localhost:5003/api/commissions/linear_$TIMESTAMP 2>/dev/null || echo "")
-check "Комиссия u2 (L1=10)" "10" "$COMMISSIONS"
-check "Комиссия u1 (L2=20)" "20" "$COMMISSIONS"
-check "Комиссия root (L3=30)" "30" "$COMMISSIONS"
-check "SchemaType=Linear" "Linear" "$COMMISSIONS"
-
-# ============================================
-# 5. Fibonacci схема
-# ============================================
-section "5/8" "Fibonacci схема (F(L) × Profit / 100)"
-
-curl -sf -X POST http://localhost:5003/api/admin/schema \
-  -H "Content-Type: application/json" \
-  -d '{"schema":"Fibonacci"}' > /dev/null 2>&1 || true
-
-# ✅ Уникальное имя события
-curl -sf -X POST http://localhost:5002/api/events \
-  -H "Content-Type: application/json" \
-  -d "{\"eventExternalId\":\"fib_$TIMESTAMP\",\"userExternalId\":\"u3_$TIMESTAMP\",\"profit\":1000}" > /dev/null 2>&1
-
-sleep 15
-
-FIB_COMMISSIONS=$(curl -sf http://localhost:5003/api/commissions/fib_$TIMESTAMP 2>/dev/null || echo "")
-check "Fibonacci u2 (F1=10)" "10" "$FIB_COMMISSIONS"
-check "Fibonacci u1 (F2=10)" "10" "$FIB_COMMISSIONS"
-check "Fibonacci root (F3=20)" "20" "$FIB_COMMISSIONS"
-check "SchemaType=Fibonacci" "Fibonacci" "$FIB_COMMISSIONS"
-
-# ============================================
-# 6. Старые комиссии не пересчитываются
-# ============================================
-section "6/8" "Старые комиссии не пересчитываются"
-
-OLD=$(curl -sf http://localhost:5003/api/commissions/linear_$TIMESTAMP 2>/dev/null || echo "")
-check "Linear событие осталось Linear" "Linear" "$OLD"
-
-curl -sf -X POST http://localhost:5003/api/admin/schema \
-  -H "Content-Type: application/json" \
-  -d '{"schema":"Linear"}' > /dev/null 2>&1 || true
-
-# ============================================
-# 7. Идемпотентность
-# ============================================
-section "7/8" "Идемпотентность (защита от дубликатов)"
-
-# ✅ Уникальное имя события
-for i in 1 2 3; do
-  curl -sf -X POST http://localhost:5002/api/events \
+post_json() {
+  curl -sS --max-time 10 -X POST "$1" \
     -H "Content-Type: application/json" \
-    -d "{\"eventExternalId\":\"idempotent_$TIMESTAMP\",\"userExternalId\":\"u3_$TIMESTAMP\",\"profit\":100}" > /dev/null 2>&1 || true
-done
+    -d "$2" 2>/dev/null || true
+}
 
-sleep 10
+check_contains() {
+  local name="$1"
+  local expected="$2"
+  local actual="$3"
 
-COUNT=$(curl -sf http://localhost:5003/api/commissions/idempotent_$TIMESTAMP 2>/dev/null | grep -o "partnerExternalId" | wc -l)
-if [ "$COUNT" -eq 3 ]; then
-    echo -e "${GREEN}✓ Идемпотентность: 3 комиссии (дубликаты не создали лишних)${NC}"
-    ((PASS++))
-else
-    echo -e "${RED}✗ Идемпотентность: ожидалось 3, получено $COUNT${NC}"
-    ((FAIL++))
+  if grep -Fqi -- "$expected" <<< "$actual"; then
+    pass "$name"
+  else
+    fail "$name" "Expected '$expected', actual: $(echo "$actual" | head -c 300)"
+  fi
+}
+
+wait_for_contains() {
+  local url="$1"
+  local expected="$2"
+  local timeout_seconds="${3:-30}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local response=""
+
+  while (( SECONDS < deadline )); do
+    response=$(get "$url")
+    if grep -Fqi -- "$expected" <<< "$response"; then
+      echo "$response"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "$response"
+  return 1
+}
+
+wait_for_health() {
+  local name="$1"
+  local url="$2"
+  local response
+
+  if response=$(wait_for_contains "$url" "Healthy" 90); then
+    pass "$name health check"
+  else
+    fail "$name health check" "Last response: $response"
+  fi
+}
+
+if $START_SERVICES; then
+  echo -e "${CYAN}Building and starting Docker services...${NC}"
+  docker compose up -d --build || exit 1
 fi
 
-# ============================================
-# 8. Отрицательный Profit
-# ============================================
-section "8/8" "Отрицательный Profit (убыток)"
+ROOT="root_$RUN_ID"
+U1="u1_$RUN_ID"
+U2="u2_$RUN_ID"
+U3="u3_$RUN_ID"
+LINEAR_EVENT="linear_$RUN_ID"
+FIB_EVENT="fib_$RUN_ID"
+IDEMPOTENT_EVENT="idempotent_$RUN_ID"
+LOSS_EVENT="loss_$RUN_ID"
 
-# ✅ Уникальное имя события
-curl -sf -X POST http://localhost:5002/api/events \
-  -H "Content-Type: application/json" \
-  -d "{\"eventExternalId\":\"loss_$TIMESTAMP\",\"userExternalId\":\"u3_$TIMESTAMP\",\"profit\":-500}" > /dev/null 2>&1 || true
+section "1/8" "Health checks"
+wait_for_health "UserService" "http://localhost:5001/health"
+wait_for_health "EventService" "http://localhost:5002/health"
+wait_for_health "CommissionService" "http://localhost:5003/health"
+wait_for_health "WalletService" "http://localhost:5004/health"
 
-sleep 10
+section "2/8" "Create partner hierarchy"
+post_json "http://localhost:5001/api/users" "{\"externalId\":\"$ROOT\"}" >/dev/null
+post_json "http://localhost:5001/api/users" "{\"externalId\":\"$U1\",\"parentExternalId\":\"$ROOT\"}" >/dev/null
+post_json "http://localhost:5001/api/users" "{\"externalId\":\"$U2\",\"parentExternalId\":\"$U1\"}" >/dev/null
+post_json "http://localhost:5001/api/users" "{\"externalId\":\"$U3\",\"parentExternalId\":\"$U2\"}" >/dev/null
 
-LOSS=$(curl -sf http://localhost:5003/api/commissions/loss_$TIMESTAMP 2>/dev/null || echo "")
-check "Нет комиссий при убытке" "commissions" "$LOSS"
+CHAIN=$(get "http://localhost:5001/api/users/$U3/chain")
+check_contains "Upward chain contains level-1 partner" "$U2" "$CHAIN"
+check_contains "Upward chain contains level-2 partner" "$U1" "$CHAIN"
+check_contains "Upward chain contains level-3 partner" "$ROOT" "$CHAIN"
 
-# ============================================
-# Итог
-# ============================================
-header "ИТОГ"
+section "3/8" "Downline projection"
+DOWNLINE=$(get "http://localhost:5001/api/users/$ROOT/downline")
+check_contains "Root downline contains first child" "$U1" "$DOWNLINE"
+check_contains "Root downline contains second-level child" "$U2" "$DOWNLINE"
+check_contains "Root downline contains third-level child" "$U3" "$DOWNLINE"
 
-echo -e "${YELLOW}✓ Пройдено: $PASS${NC}"
-echo -e "${RED}✗ Провалено: $FAIL${NC}"
+section "4/8" "Linear commission calculation and multi-partner payout"
+post_json "http://localhost:5003/api/admin/schema" '{"schema":"Linear"}' >/dev/null
+post_json "http://localhost:5002/api/events" "{\"eventExternalId\":\"$LINEAR_EVENT\",\"userExternalId\":\"$U3\",\"profit\":1000,\"occurredAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >/dev/null
+
+if COMMISSIONS=$(wait_for_contains "http://localhost:5003/api/commissions/$LINEAR_EVENT" '"amount":30' 30); then
+  check_contains "Linear level 1 amount is 10" '"amount":10' "$COMMISSIONS"
+  check_contains "Linear level 2 amount is 20" '"amount":20' "$COMMISSIONS"
+  check_contains "Linear level 3 amount is 30" '"amount":30' "$COMMISSIONS"
+  check_contains "Commission scheme is persisted as Linear" '"schemaType":"Linear"' "$COMMISSIONS"
+else
+  fail "Linear commissions become available" "Last response: $COMMISSIONS"
+fi
+
+# This specifically guards the former bug where EventExternalId alone was unique in PendingPayouts,
+# which allowed only the first partner payout for a multi-level commission event.
+if BALANCE_U2=$(wait_for_contains "http://localhost:5004/api/wallets/$U2/balance" '"balance":10' 30); then
+  pass "Level-1 partner payout is deposited"
+else
+  fail "Level-1 partner payout is deposited" "Last response: $BALANCE_U2"
+fi
+if BALANCE_U1=$(wait_for_contains "http://localhost:5004/api/wallets/$U1/balance" '"balance":20' 30); then
+  pass "Level-2 partner payout is deposited"
+else
+  fail "Level-2 partner payout is deposited" "Last response: $BALANCE_U1"
+fi
+if BALANCE_ROOT=$(wait_for_contains "http://localhost:5004/api/wallets/$ROOT/balance" '"balance":30' 30); then
+  pass "Level-3 partner payout is deposited"
+else
+  fail "Level-3 partner payout is deposited" "Last response: $BALANCE_ROOT"
+fi
+
+section "5/8" "Fibonacci commission scheme"
+post_json "http://localhost:5003/api/admin/schema" '{"schema":"Fibonacci"}' >/dev/null
+post_json "http://localhost:5002/api/events" "{\"eventExternalId\":\"$FIB_EVENT\",\"userExternalId\":\"$U3\",\"profit\":1000,\"occurredAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >/dev/null
+
+if FIB_COMMISSIONS=$(wait_for_contains "http://localhost:5003/api/commissions/$FIB_EVENT" '"amount":20' 30); then
+  check_contains "Fibonacci event uses Fibonacci scheme" '"schemaType":"Fibonacci"' "$FIB_COMMISSIONS"
+  LEVEL_ONE_COUNT=$(grep -o '"amount":10' <<< "$FIB_COMMISSIONS" | wc -l | tr -d ' ')
+  if [[ "$LEVEL_ONE_COUNT" -ge 2 ]]; then
+    pass "Fibonacci levels 1 and 2 both produce amount 10"
+  else
+    fail "Fibonacci levels 1 and 2 both produce amount 10" "Response: $FIB_COMMISSIONS"
+  fi
+else
+  fail "Fibonacci commissions become available" "Last response: $FIB_COMMISSIONS"
+fi
+
+section "6/8" "Historical scheme immutability"
+OLD_LINEAR=$(get "http://localhost:5003/api/commissions/$LINEAR_EVENT")
+check_contains "Existing Linear commissions remain Linear" '"schemaType":"Linear"' "$OLD_LINEAR"
+post_json "http://localhost:5003/api/admin/schema" '{"schema":"Linear"}' >/dev/null
+
+section "7/8" "Idempotency"
+PAYLOAD="{\"eventExternalId\":\"$IDEMPOTENT_EVENT\",\"userExternalId\":\"$U3\",\"profit\":100,\"occurredAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+for _ in 1 2 3; do
+  post_json "http://localhost:5002/api/events" "$PAYLOAD" >/dev/null
+ done
+
+if IDEMPOTENT=$(wait_for_contains "http://localhost:5003/api/commissions/$IDEMPOTENT_EVENT" '"partnerExternalId"' 30); then
+  COUNT=$(grep -o '"partnerExternalId"' <<< "$IDEMPOTENT" | wc -l | tr -d ' ')
+  if [[ "$COUNT" -eq 3 ]]; then
+    pass "Duplicate requests create exactly one commission per partner level"
+  else
+    fail "Duplicate requests create exactly one commission per partner level" "Expected 3 commissions, got $COUNT"
+  fi
+else
+  fail "Idempotent event becomes available" "Last response: $IDEMPOTENT"
+fi
+
+section "8/8" "Negative profit"
+post_json "http://localhost:5002/api/events" "{\"eventExternalId\":\"$LOSS_EVENT\",\"userExternalId\":\"$U3\",\"profit\":-500,\"occurredAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >/dev/null
+sleep 2
+LOSS=$(get "http://localhost:5003/api/commissions/$LOSS_EVENT")
+check_contains "Loss event produces no commissions" '"commissions":[]' "$LOSS"
+
+echo -e "\n${CYAN}========================================${NC}"
+echo -e "${CYAN} Test summary${NC}"
 echo -e "${CYAN}========================================${NC}"
+echo -e "${GREEN}Passed: $PASS${NC}"
+echo -e "${RED}Failed: $FAIL${NC}"
 
-if [ $FAIL -eq 0 ]; then
-    echo -e "${GREEN}🎉 ВСЕ ТЕСТЫ ПРОЙДЕНЫ! Система готова к сдаче!${NC}"
-    exit 0
-else
-    echo -e "${RED}⚠️ Есть проваленные тесты${NC}"
-    echo -e "${YELLOW}Проверь логи: docker compose logs commissionservice${NC}"
-    exit 1
+if [[ "$FAIL" -eq 0 ]]; then
+  echo -e "${GREEN}All end-to-end checks passed.${NC}"
+  exit 0
 fi
+
+echo -e "${RED}Some checks failed.${NC}"
+echo "Inspect logs with: docker compose logs --tail=200"
+exit 1

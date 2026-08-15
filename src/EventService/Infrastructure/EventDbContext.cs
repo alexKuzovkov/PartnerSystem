@@ -1,4 +1,4 @@
-﻿using MassTransit;
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 
 namespace EventService.Infrastructure;
@@ -11,7 +11,6 @@ public class EventDbContext : DbContext
     }
 
     public DbSet<Domain.ProfitEvent> ProfitEvents => Set<Domain.ProfitEvent>();
-    public DbSet<Domain.OutboxMessage> OutboxMessages => Set<Domain.OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -25,12 +24,6 @@ public class EventDbContext : DbContext
                 .IsUnique();
 
             entity.HasIndex(e => new { e.UserExternalId, e.OccurredAt });
-        });
-
-        modelBuilder.Entity<Domain.OutboxMessage>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.HasIndex(e => e.ProcessedDate);
         });
 
         modelBuilder.AddInboxStateEntity();

@@ -38,21 +38,17 @@ builder.Services.AddMassTransit(x =>
 
         cfg.ReceiveEndpoint("wallet-service-commission-calculated", e =>
         {
-            e.ConfigureConsumer<PayoutConsumer>(context);
-
             e.ConcurrentMessageLimit = 16;
             e.PrefetchCount = 16;
-
             e.UseMessageRetry(r => r.Interval(3, TimeSpan.FromSeconds(5)));
+            e.ConfigureConsumer<PayoutConsumer>(context);
         });
-
-        cfg.ConfigureEndpoints(context);
     });
 });
 
 
-var payoutInterval = TimeSpan.FromMinutes(
-    builder.Configuration.GetValue<int>("PayoutSettings:IntervalMinutes", 5));
+var payoutInterval = TimeSpan.FromSeconds(
+    builder.Configuration.GetValue<int>("PayoutSettings:IntervalSeconds", 30));
 
 builder.Services.AddHostedService(sp =>
     new PayoutBackgroundService(

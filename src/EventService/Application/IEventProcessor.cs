@@ -1,8 +1,10 @@
-﻿namespace EventService.Application;
+namespace EventService.Application;
 
 public interface IEventProcessor
 {
-    Task<ProcessResult> ProcessProfitEvent(ProfitEventDto eventDto);
+    Task<ProcessResult> ProcessProfitEventAsync(
+        ProfitEventDto eventDto,
+        CancellationToken cancellationToken = default);
 }
 
 public record ProfitEventRequest(
@@ -14,13 +16,13 @@ public record ProfitEventRequest(
 public record ProcessResult
 {
     public bool Success { get; init; }
-    public string Message { get; init; } = null!;
+    public required string Message { get; init; }
 }
 
 public record ProfitEventDto
 {
-    public string EventExternalId { get; init; } = null!;
-    public string UserExternalId { get; init; } = null!;
+    public required string EventExternalId { get; init; }
+    public required string UserExternalId { get; init; }
     public decimal Profit { get; init; }
     public DateTime OccurredAt { get; init; }
 }

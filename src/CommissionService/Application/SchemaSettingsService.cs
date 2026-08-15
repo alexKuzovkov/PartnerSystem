@@ -1,10 +1,11 @@
-﻿using CommissionService.Infrastructure;
+using CommissionService.Domain;
+using CommissionService.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using PartnerSystem.Contracts;
 
 namespace CommissionService.Application;
 
-public class SchemaSettingsService : ISchemaSettingsService
+public sealed class SchemaSettingsService : ISchemaSettingsService
 {
     private readonly CommissionDbContext _context;
     private readonly ILogger<SchemaSettingsService> _logger;
@@ -17,27 +18,36 @@ public class SchemaSettingsService : ISchemaSettingsService
         _logger = logger;
     }
 
-    public async Task<SchemaType> GetCurrentSchemaAsync()
+    public async Task<SchemaType> GetCurrentSchemaAsync(
+        CancellationToken cancellationToken = default)
     {
-        var settings = await _context.SchemaSettings.FirstOrDefaultAsync();
+        var settings = await _context.SchemaSettings
+            .OrderByDescending(x => x.UpdatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
 
-        if (settings == null)
-        {
-            settings = new SchemaSettings(SchemaType.Linear);
-            _context.SchemaSettings.Add(settings);
-            await _context.SaveChangesAsync();
+        if (settings is not null)
+            return settings.CurrentSchema;
 
-            _logger.LogInformation("Созданы настройки схемы по умолчанию: {Schema}", settings.CurrentSchema);
-        }
+        settings = new SchemaSettings(SchemaType.Linear);
+        _context.SchemaSettings.Add(settings);
+        await _context.SaveChangesAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "Created default commission scheme settings: {Schema}",
+            settings.CurrentSchema);
 
         return settings.CurrentSchema;
     }
 
-    public async Task SetCurrentSchemaAsync(SchemaType schemaType, CancellationToken cancellationToken)
+    public async Task SetCurrentSchemaAsync(
+        SchemaType schemaType,
+        CancellationToken cancellationToken = default)
     {
-        var settings = await _context.SchemaSettings.FirstOrDefaultAsync();
+        var settings = await _context.SchemaSettings
+            .OrderByDescending(x => x.UpdatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
 
-        if (settings == null)
+        if (settings is null)
         {
             settings = new SchemaSettings(schemaType);
             _context.SchemaSettings.Add(settings);
@@ -47,8 +57,8 @@ public class SchemaSettingsService : ISchemaSettingsService
             settings.ChangeSchema(schemaType, "admin");
         }
 
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
-        _logger.LogInformation("Схема переключена на {Schema}", schemaType);
+        _logger.LogInformation("Commission scheme changed to {Schema}", schemaType);
     }
 }

@@ -1,9 +1,9 @@
-﻿using MassTransit;
+using MassTransit;
 using PartnerSystem.Contracts;
 
 namespace EventService.Application;
 
-public class ProfitEventConsumer : IConsumer<ProfitEvent>
+public sealed class ProfitEventConsumer : IConsumer<ProfitEvent>
 {
     private readonly IEventProcessor _processor;
     private readonly ILogger<ProfitEventConsumer> _logger;
@@ -21,29 +21,24 @@ public class ProfitEventConsumer : IConsumer<ProfitEvent>
         var message = context.Message;
 
         _logger.LogInformation(
-            "📨 Получено событие ProfitEvent: {EventId}, пользователь {UserId}, прибыль {Profit}",
+            "Received ProfitEvent {EventId} for user {UserId}, profit {Profit}",
             message.EventExternalId,
             message.UserExternalId,
             message.Profit);
 
-        var eventDto = new ProfitEventDto
-        {
-            EventExternalId = message.EventExternalId,
-            UserExternalId = message.UserExternalId,
-            Profit = message.Profit,
-            OccurredAt = message.OccurredAt
-        };
+        var result = await _processor.ProcessProfitEventAsync(
+            new ProfitEventDto
+            {
+                EventExternalId = message.EventExternalId,
+                UserExternalId = message.UserExternalId,
+                Profit = message.Profit,
+                OccurredAt = message.OccurredAt
+            },
+            context.CancellationToken);
 
-        var result = await _processor.ProcessProfitEvent(eventDto);
-
-        if (result.Success)
-        {
-            _logger.LogInformation("Событие {EventId} успешно обработано", message.EventExternalId);
-        }
-        else
-        {
-            _logger.LogWarning("Событие {EventId} не обработано: {Message}",
-                message.EventExternalId, result.Message);
-        }
+        _logger.LogInformation(
+            "ProfitEvent {EventId} processing result: {Result}",
+            message.EventExternalId,
+            result.Message);
     }
 }

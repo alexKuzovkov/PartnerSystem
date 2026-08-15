@@ -1,15 +1,17 @@
-﻿using Grpc.Core;
+using Grpc.Core;
 using PartnerSystem.Contracts.Grpc;
 using UserService.Application;
 
 namespace UserService.Services;
 
-public class PartnerChainService : PartnerService.PartnerServiceBase
+public sealed class PartnerChainService : PartnerService.PartnerServiceBase
 {
     private readonly IUserService _userService;
     private readonly ILogger<PartnerChainService> _logger;
 
-    public PartnerChainService(IUserService userService, ILogger<PartnerChainService> logger)
+    public PartnerChainService(
+        IUserService userService,
+        ILogger<PartnerChainService> logger)
     {
         _userService = userService;
         _logger = logger;
@@ -19,21 +21,30 @@ public class PartnerChainService : PartnerService.PartnerServiceBase
         GetPartnerChainRequest request,
         ServerCallContext context)
     {
-        _logger.LogInformation("gRPC: GetPartnerChain для {UserId}", request.UserExternalId);
+        _logger.LogInformation(
+            "gRPC GetPartnerChain requested for {UserId}",
+            request.UserExternalId);
 
-        var chain = await _userService.GetPartnerChainAsync(request.UserExternalId, request.MaxLevels);
+        var chain = await _userService.GetPartnerChainAsync(
+            request.UserExternalId,
+            request.MaxLevels,
+            context.CancellationToken);
 
         var response = new GetPartnerChainResponse();
         response.PartnerExternalIds.AddRange(chain.Select(c => c.ExternalId));
-
         return response;
     }
 
-    public override async Task<AddUserResponse> AddUser(AddUserRequest request, ServerCallContext context)
+    public override async Task<AddUserResponse> AddUser(
+        AddUserRequest request,
+        ServerCallContext context)
     {
-        _logger.LogInformation("gRPC: AddUser {UserId}", request.ExternalId);
+        _logger.LogInformation("gRPC AddUser requested for {UserId}", request.ExternalId);
 
-        var result = await _userService.CreateUserAsync(request.ExternalId, request.ParentExternalId);
+        var result = await _userService.CreateUserAsync(
+            request.ExternalId,
+            string.IsNullOrWhiteSpace(request.ParentExternalId) ? null : request.ParentExternalId,
+            context.CancellationToken);
 
         return new AddUserResponse
         {
@@ -46,10 +57,15 @@ public class PartnerChainService : PartnerService.PartnerServiceBase
         SetPartnerLinkRequest request,
         ServerCallContext context)
     {
-        _logger.LogInformation("gRPC: SetPartnerLink {UserId} -> {PartnerId}",
-            request.UserExternalId, request.PartnerExternalId);
+        _logger.LogInformation(
+            "gRPC SetPartnerLink requested: {UserId} -> {PartnerId}",
+            request.UserExternalId,
+            request.PartnerExternalId);
 
-        var result = await _userService.SetPartnerLinkAsync(request.UserExternalId, request.PartnerExternalId);
+        var result = await _userService.SetPartnerLinkAsync(
+            request.UserExternalId,
+            request.PartnerExternalId,
+            context.CancellationToken);
 
         return new SetPartnerLinkResponse
         {
@@ -59,25 +75,22 @@ public class PartnerChainService : PartnerService.PartnerServiceBase
     }
 
     public override async Task<GetDownlineResponse> GetDownline(
-    GetDownlineRequest request,
-    ServerCallContext context)
+        GetDownlineRequest request,
+        ServerCallContext context)
     {
         _logger.LogInformation(
-            "gRPC: Запрос downline для {UserId}, MaxLevels={MaxLevels}",
-            request.UserExternalId, request.MaxLevels);
+            "gRPC GetDownline requested for {UserId}, MaxLevels={MaxLevels}",
+            request.UserExternalId,
+            request.MaxLevels);
 
+        var nodes = await _userService.GetDownlineAsync(
+            request.UserExternalId,
+            context.CancellationToken);
+
+        var maxLevels = Math.Clamp(request.MaxLevels, 0, 10);
         var response = new GetDownlineResponse();
-        var maxLevels = Math.Min(request.MaxLevels, 10);
 
-        var nodes = await _userService.GetDownlineAsync(request.UserExternalId);
-
-        if (nodes == null)
-        {
-            _logger.LogWarning("Пользователь {UserId} не найден", request.UserExternalId);
-            return response;
-        }
-
-        foreach (var node in nodes)
+        foreach (var node in nodes.Where(n => n.Level <= maxLevels))
         {
             response.Nodes.Add(new PartnerSystem.Contracts.Grpc.DownlineNode
             {
@@ -88,8 +101,9 @@ public class PartnerChainService : PartnerService.PartnerServiceBase
         }
 
         _logger.LogInformation(
-            "gRPC: Возвращено {Count} узлов downline для {UserId}",
-            response.Nodes.Count, request.UserExternalId);
+            "gRPC GetDownline returned {Count} nodes for {UserId}",
+            response.Nodes.Count,
+            request.UserExternalId);
 
         return response;
     }

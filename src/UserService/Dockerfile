@@ -21,10 +21,13 @@ WORKDIR /app
 COPY --from=build /app/publish .
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8080 8081
 
-# ❌ УБРАЛИ: ENV ASPNETCORE_URLS=http://+:8080
-# Используем ConfigureKestrel из Program.cs
+# ASPNETCORE_URLS is intentionally not set here
+# Kestrel endpoints are configured in Program.cs
 
 ENTRYPOINT ["dotnet", "UserService.dll"]

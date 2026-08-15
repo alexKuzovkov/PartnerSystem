@@ -1,11 +1,12 @@
-﻿using EventService.Infrastructure;
+using EventService.Infrastructure;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using PartnerSystem.Contracts;
 
 namespace EventService.Application;
 
-public class EventProcessor : IEventProcessor
+public sealed class EventProcessor : IEventProcessor
 {
     private readonly EventDbContext _context;
     private readonly IPublishEndpoint _publishEndpoint;
@@ -21,15 +22,29 @@ public class EventProcessor : IEventProcessor
         _logger = logger;
     }
 
-    public async Task<ProcessResult> ProcessProfitEvent(ProfitEventDto eventDto)
+    public async Task<ProcessResult> ProcessProfitEventAsync(
+        ProfitEventDto eventDto,
+        CancellationToken cancellationToken = default)
     {
-        var existingEvent = await _context.ProfitEvents
-            .FirstOrDefaultAsync(e => e.EventExternalId == eventDto.EventExternalId);
+        ArgumentNullException.ThrowIfNull(eventDto);
 
-        if (existingEvent != null)
+        var alreadyExists = await _context.ProfitEvents
+            .AsNoTracking()
+            .AnyAsync(
+                e => e.EventExternalId == eventDto.EventExternalId,
+                cancellationToken);
+
+        if (alreadyExists)
         {
-            _logger.LogWarning("Событие {EventId} уже обработано", eventDto.EventExternalId);
-            return new ProcessResult { Success = false, Message = "Event already processed" };
+            _logger.LogInformation(
+                "Profit event {EventId} was already processed",
+                eventDto.EventExternalId);
+
+            return new ProcessResult
+            {
+                Success = false,
+                Message = "Event already processed"
+            };
         }
 
         var profitEvent = new Domain.ProfitEvent(
@@ -38,24 +53,53 @@ public class EventProcessor : IEventProcessor
             eventDto.Profit,
             eventDto.OccurredAt);
 
-        await _context.ProfitEvents.AddAsync(profitEvent);
+        await _context.ProfitEvents.AddAsync(profitEvent, cancellationToken);
 
         if (eventDto.Profit > 0)
         {
-            var calculationEvent = new CommissionCalculationRequested(
-                eventDto.EventExternalId,
-                eventDto.UserExternalId,
-                eventDto.Profit,
-                eventDto.OccurredAt);
-
-            await _publishEndpoint.Publish(calculationEvent);
-
-            _logger.LogInformation("Опубликовано событие для расчета комиссий по событию {EventId}",
-                eventDto.EventExternalId);
+            // With MassTransit EF Bus Outbox enabled, the outbound message is persisted in the
+            // same database transaction as ProfitEvent when SaveChangesAsync succeeds.
+            await _publishEndpoint.Publish(
+                new CommissionCalculationRequested(
+                    eventDto.EventExternalId,
+                    eventDto.UserExternalId,
+                    eventDto.Profit,
+                    eventDto.OccurredAt),
+                cancellationToken);
         }
 
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            _logger.LogInformation(
+                ex,
+                "Concurrent request already persisted profit event {EventId}",
+                eventDto.EventExternalId);
 
-        return new ProcessResult { Success = true, Message = "Event processed" };
+            return new ProcessResult
+            {
+                Success = false,
+                Message = "Event already processed"
+            };
+        }
+
+        _logger.LogInformation(
+            "Profit event {EventId} persisted successfully",
+            eventDto.EventExternalId);
+
+        return new ProcessResult
+        {
+            Success = true,
+            Message = "Event processed"
+        };
     }
+
+    private static bool IsUniqueViolation(DbUpdateException exception) =>
+        exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation
+        };
 }

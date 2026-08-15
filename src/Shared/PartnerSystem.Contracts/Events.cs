@@ -1,17 +1,16 @@
-﻿namespace PartnerSystem.Contracts;
+namespace PartnerSystem.Contracts;
 
-// <summary>
-/// Событие о прибыли/убытке пользователя
+/// <summary>
+/// Represents a user's profit or loss event.
 /// </summary>
 public record ProfitEvent(
     string EventExternalId,
     string UserExternalId,
     decimal Profit,
-    DateTime OccurredAt
-);
+    DateTime OccurredAt);
 
 /// <summary>
-/// Запрос на расчет комиссий по событию
+/// Requests commission calculation for a profit event.
 /// </summary>
 public record CommissionCalculationRequested(
     string EventExternalId,
@@ -20,7 +19,7 @@ public record CommissionCalculationRequested(
     DateTime OccurredAt);
 
 /// <summary>
-/// Тип схемы расчета комиссий
+/// Defines the supported commission calculation schemes.
 /// </summary>
 public enum SchemaType
 {
@@ -29,12 +28,11 @@ public enum SchemaType
 }
 
 /// <summary>
-/// Результат расчета комиссии для одного уровня
+/// Represents a calculated commission for one hierarchy level.
 /// </summary>
 public record CommissionCalculated(
     string EventExternalId,
     string PartnerExternalId,
     int Level,
     decimal Amount,
-    SchemaType SchemaType
-);
+    SchemaType SchemaType);
