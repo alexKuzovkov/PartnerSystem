@@ -28,8 +28,8 @@ public sealed class UsersController : ControllerBase
         if (!result.Success)
             return BadRequest(new { message = result.Message });
 
-        return CreatedAtAction(
-            nameof(GetPartnerChainAsync),
+        return CreatedAtRoute(
+            "GetPartnerChain",
             new { userExternalId = request.ExternalId },
             new UserDto(request.ExternalId, request.ParentExternalId, DateTime.UtcNow));
     }
@@ -51,7 +51,7 @@ public sealed class UsersController : ControllerBase
         return Ok(new { message = result.Message });
     }
 
-    [HttpGet("{userExternalId}/chain")]
+    [HttpGet("{userExternalId}/chain", Name = "GetPartnerChain")]
     public async Task<ActionResult<List<PartnerChainItem>>> GetPartnerChainAsync(
         string userExternalId,
         [FromQuery] int maxLevels = 10,
